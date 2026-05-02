@@ -13,11 +13,10 @@ ignore = []
 allow = [
     "MIT",
     "Apache-2.0",
-    "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
-    "Unicode-DFS-2016",
-    "0BSD",
+    "CDLA-Permissive-2.0",
+    "Unicode-3.0",
 ]
 confidence-threshold = 0.8
 
