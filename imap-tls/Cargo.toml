@@ -1,0 +1,17 @@
+[package]
+name = "imap-tls"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+imap-client = { path = "../imap-client" }
+rustls.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio-rustls = "0.26"
+webpki-roots = "1.0"
+rustls-pki-types = "1.14"

@@ -1,0 +1,18 @@
+[package]
+name = "imap-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bytes.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+criterion = "0.8"
+
+[[bench]]
+name = "parser_bench"
+harness = false

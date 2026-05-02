@@ -1,0 +1,8 @@
+error[E0599]: no method named `fetch` found for struct `Session<Unauthenticated, Tls>` in the current scope
+ --> tests/ui/fetch_on_unauthenticated.rs:9:21
+  |
+9 |     let _ = session.fetch("1", "ALL").await;
+  |                     ^^^^^ method not found in `Session<Unauthenticated, Tls>`
+  |
+  = note: the method was found for
+          - `Session<Selected, T>`
