@@ -7,7 +7,7 @@ targets = [
 
 [advisories]
 vulnerability = "deny"
-unmaintained = "deny"
+unmaintained = "workspace"
 notice = "warn"
 ignore = []
 
