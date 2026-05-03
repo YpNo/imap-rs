@@ -296,16 +296,19 @@ mod tests {
 
         let result = client.execute_command("NOOP").await;
         // Depending on timing, this could be Timeout or ConnectionClosed
-        assert!(matches!(result, Err(ClientError::ConnectionClosed) | Err(ClientError::Timeout)));
+        assert!(matches!(
+            result,
+            Err(ClientError::ConnectionClosed) | Err(ClientError::Timeout)
+        ));
     }
 
     #[tokio::test]
     async fn test_read_loop_eof() {
         let (client_io, server_io) = duplex(1024);
         let _client = RawClient::new(client_io);
-        
+
         drop(server_io); // EOF
-        
+
         // broadcast receiver will get RecvError::Closed if the sender is dropped,
         // but here the sender is in RawClient, which is still alive.
         // However, the read loop will exit.

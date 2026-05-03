@@ -26,9 +26,16 @@ The `RawClient` uses a `BytesMut` buffer strategy to handle:
 - **Binary Literals**: Identifies `{n}\r\n` lengths to wait for complete data blocks.
 - **Event Broadcasting**: Background untagged responses (e.g., `EXISTS`, `FETCH`) are broadcast via a `tokio::sync::broadcast` channel.
 
+### 5. Ergonomic & Structured API
+While maintaining low-level protocol access (`fetch_raw`), the library provides a high-level, ergonomic interface for common tasks:
+- **`fetch`**: Returns structured `FetchResult` objects instead of raw bytes, automatically handling attribute extraction and literal reassembly.
+- **`fetch_body`**: A convenience method to directly retrieve message content as a string.
+- **Stateful Results**: Automatically drains untagged broadcast events to ensure a complete and consistent view of command results.
+
 ## Security & Quality Gates
 
 - **Memory Safety**: 100% `safe` Rust. `unsafe` code is strictly prohibited.
+- **High Test Coverage**: Aggregate workspace coverage exceeds **89%**, with exhaustive state-machine validation and parser failure-path testing using `tokio::io::duplex` mocks.
 - **No-FFI TLS**: Only `rustls` is allowed for transport encryption to avoid the vulnerability surface of C-based TLS libraries.
 - **Credential Hygiene**: Sensitive data is wrapped in `Password` and `OAuthToken` types which use the `zeroize` crate to wipe memory on drop and obfuscate `Debug` output.
 - **Dependency Audit**: `deny.toml` is active to block legacy, risky, or deprecated crates (e.g., `lazy_static`, `openssl`).

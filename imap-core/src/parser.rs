@@ -55,6 +55,7 @@ pub fn parse_response(input: &[u8]) -> IResult<'_, Response<'_>> {
             std::str::from_utf8(&input[2..end]).map_err(|_| ParseError::Other("Invalid UTF-8"))?;
 
         let mut skip = 2;
+        let mut actual_end = end;
         if let Some(brace_idx) = line.rfind('{')
             && line.ends_with('}')
         {
@@ -65,14 +66,23 @@ pub fn parse_response(input: &[u8]) -> IResult<'_, Response<'_>> {
                     return Err(ParseError::Incomplete);
                 }
                 skip = 2 + len;
+                // We might have more data after the literal before the final CRLF
+                // In IMAP, a literal is followed by the rest of the response
+                let after_literal = &input[total_required..];
+                if let Some(final_crlf_pos) = after_literal.windows(2).position(|w| w == b"\r\n") {
+                    actual_end = total_required + final_crlf_pos;
+                } else {
+                    // If no CRLF after literal, it might be incomplete or the literal was the end
+                    actual_end = total_required;
+                }
             }
         }
 
-        let remaining = &input[end..];
+        let remaining = &input[actual_end..];
         if remaining.starts_with(b"\r\n") {
             if let Some(text) = line.strip_prefix("OK ") {
                 Ok((
-                    &remaining[skip..],
+                    &remaining[2..],
                     Response::Status(StatusResponse {
                         tag: None,
                         status: Status::Ok,
@@ -85,10 +95,68 @@ pub fn parse_response(input: &[u8]) -> IResult<'_, Response<'_>> {
                     .split_whitespace()
                     .filter_map(|s| s.parse::<u32>().ok())
                     .collect();
-                Ok((
-                    &remaining[skip..],
-                    Response::Data(DataResponse::Search(ids)),
-                ))
+                Ok((&remaining[2..], Response::Data(DataResponse::Search(ids))))
+            } else if let Some(rest) = line.split_once(' ') {
+                if let Ok(seq) = rest.0.parse::<u32>() {
+                    if rest.1.starts_with("FETCH") {
+                        let mut attributes = vec![];
+                        // Extract attributes from the parts of the response before and after the literal
+                        let mut full_attr_text = rest.1.to_string();
+                        if skip > 2 {
+                            let after_literal_start = end + 2 + (skip - 2);
+                            let after_literal_end = actual_end;
+                            if input.len() >= after_literal_end
+                                && after_literal_end > after_literal_start
+                            {
+                                full_attr_text.push_str(&String::from_utf8_lossy(
+                                    &input[after_literal_start..after_literal_end],
+                                ));
+                            }
+                        }
+
+                        // Basic UID extraction
+                        if let Some(uid_pos) = full_attr_text.find("UID ") {
+                            let rest_attr = &full_attr_text[uid_pos + 4..];
+                            let uid_val =
+                                rest_attr.split(|c| c == ' ' || c == ')' || c == '(').next();
+                            if let Some(uid) = uid_val.and_then(|s| s.parse::<u32>().ok()) {
+                                attributes.push(crate::ast::FetchAttribute::Uid(uid));
+                            }
+                        }
+
+                        // Basic BODY extraction (if literal was used)
+                        if line.contains("BODY[]") || line.contains("RFC822") {
+                            // If we have a skip/literal, it's likely the body content
+                            if skip > 2 {
+                                let literal_start = end + 2;
+                                let literal_end = literal_start + (skip - 2);
+                                if input.len() >= literal_end {
+                                    attributes.push(crate::ast::FetchAttribute::Body(
+                                        &input[literal_start..literal_end],
+                                    ));
+                                }
+                            }
+                        }
+
+                        Ok((
+                            &remaining[2..],
+                            Response::Data(DataResponse::Fetch { seq, attributes }),
+                        ))
+                    } else if rest.1.starts_with("EXISTS") {
+                        Ok((&remaining[2..], Response::Data(DataResponse::Exists(seq))))
+                    } else if rest.1.starts_with("RECENT") {
+                        Ok((&remaining[2..], Response::Data(DataResponse::Recent(seq))))
+                    } else if rest.1.starts_with("EXPUNGE") {
+                        Ok((&remaining[2..], Response::Data(DataResponse::Expunge(seq))))
+                    } else {
+                        Ok((&remaining[2..], Response::Data(DataResponse::Other(vec![]))))
+                    }
+                } else {
+                    Ok((
+                        &remaining[skip..],
+                        Response::Data(DataResponse::Other(vec![])),
+                    ))
+                }
             } else {
                 Ok((
                     &remaining[skip..],
@@ -222,7 +290,7 @@ mod tests {
     fn test_parse_literal_complete() {
         let input = b"* OK {10}\r\n0123456789\r\n";
         let (rem, resp) = parse_response(input).unwrap();
-        assert_eq!(rem.len(), 2); // \r\n remaining
+        assert_eq!(rem.len(), 0);
         if let Response::Status(s) = resp {
             assert_eq!(s.text, "{10}");
         } else {
@@ -255,7 +323,10 @@ mod tests {
     fn test_parse_unsupported_tag_response() {
         let input = b"A1 NO failed\r\n";
         let res = parse_response(input);
-        assert!(matches!(res, Err(ParseError::Other("Unsupported tag response"))));
+        assert!(matches!(
+            res,
+            Err(ParseError::Other("Unsupported tag response"))
+        ));
     }
 
     #[test]
@@ -290,7 +361,7 @@ mod tests {
         let input = b"* 1 FETCH (FLAGS (\\Seen))\r\n";
         let (rem, resp) = parse_response(input).unwrap();
         assert_eq!(rem.len(), 0);
-        assert!(matches!(resp, Response::Data(DataResponse::Other(_))));
+        assert!(matches!(resp, Response::Data(DataResponse::Fetch { .. })));
     }
 
     #[test]
@@ -341,7 +412,7 @@ mod tests {
         let input = b"* 10 EXPUNGE\r\n";
         let (rem, resp) = parse_response(input).unwrap();
         assert_eq!(rem.len(), 0);
-        assert!(matches!(resp, Response::Data(DataResponse::Other(_))));
+        assert!(matches!(resp, Response::Data(DataResponse::Expunge(10))));
     }
 
     #[test]
@@ -369,6 +440,9 @@ mod tests {
     fn test_parse_tagged_unsupported_tag() {
         let input = b"A1 NO text\r\n";
         let res = parse_response(input);
-        assert!(matches!(res, Err(ParseError::Other("Unsupported tag response"))));
+        assert!(matches!(
+            res,
+            Err(ParseError::Other("Unsupported tag response"))
+        ));
     }
 }

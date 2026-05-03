@@ -91,11 +91,23 @@ mod tests {
     #[test]
     fn test_search_key_formatting() {
         assert_eq!(SearchKey::All.to_imap_string(), "ALL");
-        assert_eq!(SearchKey::From("alice".into()).to_imap_string(), "FROM \"alice\"");
+        assert_eq!(
+            SearchKey::From("alice".into()).to_imap_string(),
+            "FROM \"alice\""
+        );
         assert_eq!(SearchKey::To("bob".into()).to_imap_string(), "TO \"bob\"");
-        assert_eq!(SearchKey::Subject("hello".into()).to_imap_string(), "SUBJECT \"hello\"");
-        assert_eq!(SearchKey::Body("world".into()).to_imap_string(), "BODY \"world\"");
-        assert_eq!(SearchKey::Text("foo".into()).to_imap_string(), "TEXT \"foo\"");
+        assert_eq!(
+            SearchKey::Subject("hello".into()).to_imap_string(),
+            "SUBJECT \"hello\""
+        );
+        assert_eq!(
+            SearchKey::Body("world".into()).to_imap_string(),
+            "BODY \"world\""
+        );
+        assert_eq!(
+            SearchKey::Text("foo".into()).to_imap_string(),
+            "TEXT \"foo\""
+        );
         assert_eq!(SearchKey::Answered.to_imap_string(), "ANSWERED");
         assert_eq!(SearchKey::Deleted.to_imap_string(), "DELETED");
         assert_eq!(SearchKey::Draft.to_imap_string(), "DRAFT");
@@ -117,10 +129,7 @@ mod tests {
         ]);
         assert_eq!(and.to_imap_string(), "FROM \"alice\" SUBJECT \"hello\"");
 
-        let or = SearchKey::Or(
-            Box::new(SearchKey::Seen),
-            Box::new(SearchKey::Recent),
-        );
+        let or = SearchKey::Or(Box::new(SearchKey::Seen), Box::new(SearchKey::Recent));
         assert_eq!(or.to_imap_string(), "OR (SEEN) (RECENT)");
 
         let not = SearchKey::Not(Box::new(SearchKey::Deleted));
