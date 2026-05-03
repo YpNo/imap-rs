@@ -18,3 +18,16 @@ impl IdleHandle {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_idle_handle_stop() {
+        let (tx, rx) = oneshot::channel();
+        let handle = IdleHandle::new(tx);
+        handle.stop().await.unwrap();
+        assert!(rx.await.is_ok());
+    }
+}

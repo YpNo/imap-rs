@@ -287,4 +287,28 @@ mod tests {
         let result = command_task.await.unwrap().unwrap();
         assert!(String::from_utf8_lossy(&result).contains("OK"));
     }
+
+    #[tokio::test]
+    async fn test_connection_closed() {
+        let (client_io, server_io) = duplex(1024);
+        let mut client = RawClient::new(client_io);
+        drop(server_io); // Close the connection
+
+        let result = client.execute_command("NOOP").await;
+        // Depending on timing, this could be Timeout or ConnectionClosed
+        assert!(matches!(result, Err(ClientError::ConnectionClosed) | Err(ClientError::Timeout)));
+    }
+
+    #[tokio::test]
+    async fn test_read_loop_eof() {
+        let (client_io, server_io) = duplex(1024);
+        let _client = RawClient::new(client_io);
+        
+        drop(server_io); // EOF
+        
+        // broadcast receiver will get RecvError::Closed if the sender is dropped,
+        // but here the sender is in RawClient, which is still alive.
+        // However, the read loop will exit.
+        tokio::task::yield_now().await;
+    }
 }

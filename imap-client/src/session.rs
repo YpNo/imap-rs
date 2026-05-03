@@ -50,6 +50,12 @@ impl<S, T> Session<S, T> {
 // Initial state
 impl<T> Session<Unauthenticated, T> {
     pub fn new(raw: RawClient, capabilities: Capabilities) -> Self {
+        Self::new_in_state(raw, capabilities)
+    }
+}
+
+impl<S, T> Session<S, T> {
+    pub(crate) fn new_in_state(raw: RawClient, capabilities: Capabilities) -> Self {
         Self {
             raw,
             capabilities,
@@ -216,5 +222,353 @@ impl<T> Session<Selected, T> {
         }
         let cmd = format!("MOVE {} \"{}\"", sequence_set, mailbox);
         self.raw.execute_command(&cmd).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Flag, StoreAction, Tls, SearchQuery};
+    use tokio::io::{duplex, AsyncWriteExt, AsyncReadExt};
+
+    #[tokio::test]
+    async fn test_session_search() {
+        let (client_io, mut server_io) = duplex(1024);
+        let raw = RawClient::new(client_io);
+        let mut session = Session::<crate::Selected, Tls>::new_in_state(raw, Capabilities::default());
+
+        let search_task = tokio::spawn(async move {
+            session.search(SearchQuery::subject("test")).await
+        });
+
+        let mut buf = [0u8; 1024];
+        let n = server_io.read(&mut buf).await.unwrap();
+        let cmd = String::from_utf8_lossy(&buf[..n]);
+        let tag = cmd.split_whitespace().next().unwrap();
+
+        server_io.write_all(b"* SEARCH 1 2 3\r\n").await.unwrap();
+        server_io.write_all(format!("{} OK SEARCH completed\r\n", tag).as_bytes()).await.unwrap();
+
+        let ids = search_task.await.unwrap().unwrap();
+        assert_eq!(ids, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn test_session_search_failure() {
+        let (client_io, mut server_io) = duplex(1024);
+        let raw = RawClient::new(client_io);
+        let mut session = Session::<crate::Selected, Tls>::new_in_state(raw, Capabilities::default());
+
+        let search_task = tokio::spawn(async move {
+            session.search(SearchQuery::subject("test")).await
+        });
+
+        let mut buf = [0u8; 1024];
+        let n = server_io.read(&mut buf).await.unwrap();
+        let cmd = String::from_utf8_lossy(&buf[..n]);
+        let tag = cmd.split_whitespace().next().unwrap();
+
+        server_io.write_all(format!("{} NO SEARCH failed\r\n", tag).as_bytes()).await.unwrap();
+
+        let res = search_task.await.unwrap();
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_list_failure() {
+        let (client_io, mut server_io) = duplex(1024);
+        let raw = RawClient::new(client_io);
+        let mut session = Session::<crate::Authenticated, Tls>::new_in_state(raw, Capabilities::default());
+
+        let list_task = tokio::spawn(async move {
+            session.list("", "*").await
+        });
+
+        let mut buf = [0u8; 1024];
+        let n = server_io.read(&mut buf).await.unwrap();
+        let cmd = String::from_utf8_lossy(&buf[..n]);
+        let tag = cmd.split_whitespace().next().unwrap();
+
+        server_io.write_all(format!("{} NO LIST failed\r\n", tag).as_bytes()).await.unwrap();
+
+        let res = list_task.await.unwrap();
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_list() {
+        let (client_io, mut server_io) = duplex(1024);
+        let raw = RawClient::new(client_io);
+        let mut session = Session::<crate::Authenticated, Tls>::new_in_state(raw, Capabilities::default());
+
+        let list_task = tokio::spawn(async move {
+            session.list("", "*").await
+        });
+
+        let mut buf = [0u8; 1024];
+        let n = server_io.read(&mut buf).await.unwrap();
+        let cmd = String::from_utf8_lossy(&buf[..n]);
+        let tag = cmd.split_whitespace().next().unwrap();
+
+        server_io.write_all(format!("{} OK LIST completed\r\n", tag).as_bytes()).await.unwrap();
+
+        let resp = list_task.await.unwrap().unwrap();
+        assert!(String::from_utf8_lossy(&resp).contains("OK"));
+    }
+
+    #[tokio::test]
+    async fn test_session_store() {
+        let (client_io, mut server_io) = duplex(1024);
+        let raw = RawClient::new(client_io);
+        let mut session = Session::<crate::Selected, Tls>::new_in_state(raw, Capabilities::default());
+
+        let store_task = tokio::spawn(async move {
+            session.store("1", StoreAction::Add, &[Flag::Seen]).await
+        });
+
+        let mut buf = [0u8; 1024];
+        let n = server_io.read(&mut buf).await.unwrap();
+        let cmd = String::from_utf8_lossy(&buf[..n]);
+        let tag = cmd.split_whitespace().next().unwrap();
+
+        server_io.write_all(format!("{} OK STORE completed\r\n", tag).as_bytes()).await.unwrap();
+
+        let resp = store_task.await.unwrap().unwrap();
+        assert!(String::from_utf8_lossy(&resp).contains("OK"));
+    }
+
+    #[tokio::test]
+    async fn test_session_expunge() {
+        let (client_io, mut server_io) = duplex(1024);
+        let raw = RawClient::new(client_io);
+        let mut session = Session::<crate::Selected, Tls>::new_in_state(raw, Capabilities::default());
+
+        let expunge_task = tokio::spawn(async move {
+            session.expunge().await
+        });
+
+        let mut buf = [0u8; 1024];
+        let n = server_io.read(&mut buf).await.unwrap();
+        let cmd = String::from_utf8_lossy(&buf[..n]);
+        let tag = cmd.split_whitespace().next().unwrap();
+
+        server_io.write_all(format!("{} OK EXPUNGE completed\r\n", tag).as_bytes()).await.unwrap();
+
+        let resp = expunge_task.await.unwrap().unwrap();
+        assert!(String::from_utf8_lossy(&resp).contains("OK"));
+    }
+
+    #[tokio::test]
+    async fn test_session_uid_search() {
+        let (client_io, mut server_io) = duplex(1024);
+        let raw = RawClient::new(client_io);
+        let mut session = Session::<crate::Selected, Tls>::new_in_state(raw, Capabilities::default());
+
+        let search_task = tokio::spawn(async move {
+            session.uid_search(SearchQuery::subject("test")).await
+        });
+
+        let mut buf = [0u8; 1024];
+        let n = server_io.read(&mut buf).await.unwrap();
+        let cmd = String::from_utf8_lossy(&buf[..n]);
+        assert!(cmd.contains("UID SEARCH"));
+        let tag = cmd.split_whitespace().next().unwrap();
+
+        server_io.write_all(b"* SEARCH 4 5 6\r\n").await.unwrap();
+        server_io.write_all(format!("{} OK UID SEARCH completed\r\n", tag).as_bytes()).await.unwrap();
+
+        let ids = search_task.await.unwrap().unwrap();
+        assert_eq!(ids, vec![4, 5, 6]);
+    }
+
+    #[tokio::test]
+    async fn test_session_uid_store() {
+        let (client_io, mut server_io) = duplex(1024);
+        let raw = RawClient::new(client_io);
+        let mut session = Session::<crate::Selected, Tls>::new_in_state(raw, Capabilities::default());
+
+        let store_task = tokio::spawn(async move {
+            session.uid_store("1", StoreAction::Add, &[Flag::Seen]).await
+        });
+
+        let mut buf = [0u8; 1024];
+        let n = server_io.read(&mut buf).await.unwrap();
+        let cmd = String::from_utf8_lossy(&buf[..n]);
+        assert!(cmd.contains("UID STORE"));
+        let tag = cmd.split_whitespace().next().unwrap();
+
+        server_io.write_all(format!("{} OK UID STORE completed\r\n", tag).as_bytes()).await.unwrap();
+
+        let resp = store_task.await.unwrap().unwrap();
+        assert!(String::from_utf8_lossy(&resp).contains("OK"));
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "move_ext")]
+    async fn test_session_move_messages() {
+        let (client_io, mut server_io) = duplex(1024);
+        let raw = RawClient::new(client_io);
+        let mut caps = Capabilities::default();
+        caps.move_ext = true;
+        let mut session = Session::<crate::Selected, Tls>::new_in_state(raw, caps);
+
+        let move_task = tokio::spawn(async move {
+            session.move_messages("1", "Archive").await
+        });
+
+        let mut buf = [0u8; 1024];
+        let n = server_io.read(&mut buf).await.unwrap();
+        let cmd = String::from_utf8_lossy(&buf[..n]);
+        assert!(cmd.contains("MOVE"));
+        let tag = cmd.split_whitespace().next().unwrap();
+
+        server_io.write_all(format!("{} OK MOVE completed\r\n", tag).as_bytes()).await.unwrap();
+
+        let resp = move_task.await.unwrap().unwrap();
+        assert!(String::from_utf8_lossy(&resp).contains("OK"));
+    }
+
+    #[tokio::test]
+    async fn test_session_login() {
+        let (client_io, mut server_io) = duplex(1024);
+        let raw = RawClient::new(client_io);
+        let session = Session::<crate::Unauthenticated, Tls>::new_in_state(raw, Capabilities::default());
+
+        let login_task = tokio::spawn(async move {
+            session.login("user", crate::credentials::Password::new("pass")).await
+        });
+
+        let mut buf = [0u8; 1024];
+        let n = server_io.read(&mut buf).await.unwrap();
+        let tag = String::from_utf8_lossy(&buf[..n]).split_whitespace().next().unwrap().to_owned();
+
+        server_io.write_all(format!("{} OK LOGIN completed\r\n", tag).as_bytes()).await.unwrap();
+        
+        // Wait for CAPABILITY command after login
+        let n = server_io.read(&mut buf).await.unwrap();
+        let tag2 = String::from_utf8_lossy(&buf[..n]).split_whitespace().next().unwrap().to_owned();
+        server_io.write_all(format!("{} OK CAPABILITY completed\r\n", tag2).as_bytes()).await.unwrap();
+
+        let res = login_task.await.unwrap();
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_session_select() {
+        let (client_io, mut server_io) = duplex(1024);
+        let raw = RawClient::new(client_io);
+        let session = Session::<crate::Authenticated, Tls>::new_in_state(raw, Capabilities::default());
+
+        let select_task = tokio::spawn(async move {
+            session.select("INBOX").await
+        });
+
+        let mut buf = [0u8; 1024];
+        let n = server_io.read(&mut buf).await.unwrap();
+        let tag = String::from_utf8_lossy(&buf[..n]).split_whitespace().next().unwrap().to_owned();
+
+        server_io.write_all(format!("{} OK SELECT completed\r\n", tag).as_bytes()).await.unwrap();
+
+        let res = select_task.await.unwrap();
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_session_fetch() {
+        let (client_io, mut server_io) = duplex(1024);
+        let raw = RawClient::new(client_io);
+        let mut session = Session::<crate::Selected, Tls>::new_in_state(raw, Capabilities::default());
+
+        let fetch_task = tokio::spawn(async move {
+            session.fetch("1", "ALL").await
+        });
+
+        let mut buf = [0u8; 1024];
+        let n = server_io.read(&mut buf).await.unwrap();
+        let tag = String::from_utf8_lossy(&buf[..n]).split_whitespace().next().unwrap().to_owned();
+
+        server_io.write_all(format!("{} OK FETCH completed\r\n", tag).as_bytes()).await.unwrap();
+
+        let res = fetch_task.await.unwrap();
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_session_login_failure() {
+        let (client_io, mut server_io) = duplex(1024);
+        let raw = RawClient::new(client_io);
+        let session = Session::<crate::Unauthenticated, Tls>::new_in_state(raw, Capabilities::default());
+
+        let login_task = tokio::spawn(async move {
+            session.login("user", crate::credentials::Password::new("pass")).await
+        });
+
+        let mut buf = [0u8; 1024];
+        let n = server_io.read(&mut buf).await.unwrap();
+        let tag = String::from_utf8_lossy(&buf[..n]).split_whitespace().next().unwrap().to_owned();
+
+        server_io.write_all(format!("{} NO LOGIN failed\r\n", tag).as_bytes()).await.unwrap();
+
+        let res = login_task.await.unwrap();
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_select_failure() {
+        let (client_io, mut server_io) = duplex(1024);
+        let raw = RawClient::new(client_io);
+        let session = Session::<crate::Authenticated, Tls>::new_in_state(raw, Capabilities::default());
+
+        let select_task = tokio::spawn(async move {
+            session.select("INBOX").await
+        });
+
+        let mut buf = [0u8; 1024];
+        let n = server_io.read(&mut buf).await.unwrap();
+        let tag = String::from_utf8_lossy(&buf[..n]).split_whitespace().next().unwrap().to_owned();
+
+        server_io.write_all(format!("{} NO SELECT failed\r\n", tag).as_bytes()).await.unwrap();
+
+        let res = select_task.await.unwrap();
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_transition_transport() {
+        let (client_io, _server_io) = duplex(1024);
+        let raw = RawClient::new(client_io);
+        let session = Session::<crate::Unauthenticated, Tls>::new_in_state(raw, Capabilities::default());
+        let _ = session.transition_transport::<crate::PlainText>();
+    }
+
+    #[tokio::test]
+    async fn test_session_events() {
+        let (client_io, _server_io) = duplex(1024);
+        let raw = RawClient::new(client_io);
+        let session = Session::<crate::Unauthenticated, Tls>::new_in_state(raw, Capabilities::default());
+        let _ = session.events();
+    }
+
+    #[tokio::test]
+    async fn test_session_run_search_multiple_events() {
+        let (client_io, mut server_io) = duplex(1024);
+        let raw = RawClient::new(client_io);
+        let mut session = Session::<crate::Selected, Tls>::new_in_state(raw, Capabilities::default());
+
+        let search_task = tokio::spawn(async move {
+            session.search(SearchQuery::subject("test")).await
+        });
+
+        let mut buf = [0u8; 1024];
+        let n = server_io.read(&mut buf).await.unwrap();
+        let tag = String::from_utf8_lossy(&buf[..n]).split_whitespace().next().unwrap().to_owned();
+
+        // Send multiple SEARCH untagged responses
+        server_io.write_all(b"* SEARCH 1 2\r\n").await.unwrap();
+        server_io.write_all(b"* SEARCH 3 4\r\n").await.unwrap();
+        server_io.write_all(format!("{} OK SEARCH completed\r\n", tag).as_bytes()).await.unwrap();
+
+        let ids = search_task.await.unwrap().unwrap();
+        assert_eq!(ids, vec![1, 2, 3, 4]);
     }
 }

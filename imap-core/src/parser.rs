@@ -229,4 +229,146 @@ mod tests {
             panic!("Expected status response");
         }
     }
+
+    #[test]
+    fn test_parse_invalid_utf8() {
+        let input = b"* OK \xFF\r\n";
+        let res = parse_response(input);
+        assert!(matches!(res, Err(ParseError::Other("Invalid UTF-8"))));
+    }
+
+    #[test]
+    fn test_parse_malformed_literal() {
+        let input = b"* OK {abc}\r\n";
+        let (rem, _) = parse_response(input).unwrap();
+        assert_eq!(rem.len(), 0); // Should consume the entire line
+    }
+
+    #[test]
+    fn test_parse_missing_crlf() {
+        let input = b"* OK text\r ";
+        let res = parse_response(input);
+        assert!(matches!(res, Err(ParseError::Other("Expected CRLF"))));
+    }
+
+    #[test]
+    fn test_parse_unsupported_tag_response() {
+        let input = b"A1 NO failed\r\n";
+        let res = parse_response(input);
+        assert!(matches!(res, Err(ParseError::Other("Unsupported tag response"))));
+    }
+
+    #[test]
+    fn test_parse_continue_invalid_utf8() {
+        let input = b"+ \xFF\r\n";
+        let res = parse_response(input);
+        assert!(matches!(res, Err(ParseError::Other("Invalid UTF-8"))));
+    }
+
+    #[test]
+    fn test_parse_search_empty() {
+        let input = b"* SEARCH\r\n";
+        let (rem, resp) = parse_response(input).unwrap();
+        assert_eq!(rem.len(), 0);
+        if let Response::Data(DataResponse::Search(ids)) = resp {
+            assert!(ids.is_empty());
+        } else {
+            panic!("Expected search response");
+        }
+    }
+
+    #[test]
+    fn test_parse_other_untagged() {
+        let input = b"* LIST (\\HasNoChildren) \".\" \"INBOX\"\r\n";
+        let (rem, resp) = parse_response(input).unwrap();
+        assert_eq!(rem.len(), 0);
+        assert!(matches!(resp, Response::Data(DataResponse::Other(_))));
+    }
+
+    #[test]
+    fn test_parse_fetch() {
+        let input = b"* 1 FETCH (FLAGS (\\Seen))\r\n";
+        let (rem, resp) = parse_response(input).unwrap();
+        assert_eq!(rem.len(), 0);
+        assert!(matches!(resp, Response::Data(DataResponse::Other(_))));
+    }
+
+    #[test]
+    fn test_parse_status() {
+        let input = b"* STATUS \"INBOX\" (MESSAGES 10 RECENT 1)\r\n";
+        let (rem, resp) = parse_response(input).unwrap();
+        assert_eq!(rem.len(), 0);
+        assert!(matches!(resp, Response::Data(DataResponse::Other(_))));
+    }
+
+    #[test]
+    fn test_parse_literal_incomplete_data() {
+        let input = b"* OK {10}\r\n0123";
+        let res = parse_response(input);
+        assert!(matches!(res, Err(ParseError::Incomplete)));
+    }
+
+    #[test]
+    fn test_parse_continue_incomplete_literal() {
+        let input = b"+ {10}\r\n0123";
+        let res = parse_response(input);
+        assert!(matches!(res, Err(ParseError::Incomplete)));
+    }
+
+    #[test]
+    fn test_parse_tagged_incomplete_literal() {
+        let input = b"A1 OK {10}\r\n0123";
+        let res = parse_response(input);
+        assert!(matches!(res, Err(ParseError::Incomplete)));
+    }
+
+    #[test]
+    fn test_parse_incomplete_tagged_no_space() {
+        let input = b"A1";
+        let res = parse_response(input);
+        assert!(matches!(res, Err(ParseError::Incomplete)));
+    }
+
+    #[test]
+    fn test_parse_incomplete_tagged_no_crlf() {
+        let input = b"A1 OK\r";
+        let res = parse_response(input);
+        assert!(matches!(res, Err(ParseError::Incomplete)));
+    }
+
+    #[test]
+    fn test_parse_expunge() {
+        let input = b"* 10 EXPUNGE\r\n";
+        let (rem, resp) = parse_response(input).unwrap();
+        assert_eq!(rem.len(), 0);
+        assert!(matches!(resp, Response::Data(DataResponse::Other(_))));
+    }
+
+    #[test]
+    fn test_parse_untagged_expected_crlf() {
+        let input = b"* OK text\rX";
+        let res = parse_response(input);
+        assert!(matches!(res, Err(ParseError::Other("Expected CRLF"))));
+    }
+
+    #[test]
+    fn test_parse_tagged_expected_crlf() {
+        let input = b"A1 OK text\rX";
+        let res = parse_response(input);
+        assert!(matches!(res, Err(ParseError::Other("Expected CRLF"))));
+    }
+
+    #[test]
+    fn test_parse_continue_expected_crlf() {
+        let input = b"+ text\rX";
+        let res = parse_response(input);
+        assert!(matches!(res, Err(ParseError::Other("Expected CRLF"))));
+    }
+
+    #[test]
+    fn test_parse_tagged_unsupported_tag() {
+        let input = b"A1 NO text\r\n";
+        let res = parse_response(input);
+        assert!(matches!(res, Err(ParseError::Other("Unsupported tag response"))));
+    }
 }

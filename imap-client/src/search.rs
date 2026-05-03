@@ -83,3 +83,59 @@ impl SearchQuery {
         self.key.to_imap_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_search_key_formatting() {
+        assert_eq!(SearchKey::All.to_imap_string(), "ALL");
+        assert_eq!(SearchKey::From("alice".into()).to_imap_string(), "FROM \"alice\"");
+        assert_eq!(SearchKey::To("bob".into()).to_imap_string(), "TO \"bob\"");
+        assert_eq!(SearchKey::Subject("hello".into()).to_imap_string(), "SUBJECT \"hello\"");
+        assert_eq!(SearchKey::Body("world".into()).to_imap_string(), "BODY \"world\"");
+        assert_eq!(SearchKey::Text("foo".into()).to_imap_string(), "TEXT \"foo\"");
+        assert_eq!(SearchKey::Answered.to_imap_string(), "ANSWERED");
+        assert_eq!(SearchKey::Deleted.to_imap_string(), "DELETED");
+        assert_eq!(SearchKey::Draft.to_imap_string(), "DRAFT");
+        assert_eq!(SearchKey::Flagged.to_imap_string(), "FLAGGED");
+        assert_eq!(SearchKey::Recent.to_imap_string(), "RECENT");
+        assert_eq!(SearchKey::Seen.to_imap_string(), "SEEN");
+        assert_eq!(SearchKey::Unanswered.to_imap_string(), "UNANSWERED");
+        assert_eq!(SearchKey::Undeleted.to_imap_string(), "UNDELETED");
+        assert_eq!(SearchKey::Undraft.to_imap_string(), "UNDRAFT");
+        assert_eq!(SearchKey::Unflagged.to_imap_string(), "UNFLAGGED");
+        assert_eq!(SearchKey::Unseen.to_imap_string(), "UNSEEN");
+    }
+
+    #[test]
+    fn test_logical_operators() {
+        let and = SearchKey::And(vec![
+            SearchKey::From("alice".into()),
+            SearchKey::Subject("hello".into()),
+        ]);
+        assert_eq!(and.to_imap_string(), "FROM \"alice\" SUBJECT \"hello\"");
+
+        let or = SearchKey::Or(
+            Box::new(SearchKey::Seen),
+            Box::new(SearchKey::Recent),
+        );
+        assert_eq!(or.to_imap_string(), "OR (SEEN) (RECENT)");
+
+        let not = SearchKey::Not(Box::new(SearchKey::Deleted));
+        assert_eq!(not.to_imap_string(), "NOT (DELETED)");
+    }
+
+    #[test]
+    fn test_search_query_builder() {
+        let q = SearchQuery::subject("Security Alert");
+        assert_eq!(q.build(), "SUBJECT \"Security Alert\"");
+
+        let q = SearchQuery::from("alerts@arlo.com");
+        assert_eq!(q.build(), "FROM \"alerts@arlo.com\"");
+
+        let q = SearchQuery::to("user@example.com");
+        assert_eq!(q.build(), "TO \"user@example.com\"");
+    }
+}

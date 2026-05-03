@@ -59,3 +59,29 @@ impl StoreAction {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_flag_display() {
+        assert_eq!(Flag::Seen.to_string(), "\\Seen");
+        assert_eq!(Flag::Answered.to_string(), "\\Answered");
+        assert_eq!(Flag::Flagged.to_string(), "\\Flagged");
+        assert_eq!(Flag::Deleted.to_string(), "\\Deleted");
+        assert_eq!(Flag::Draft.to_string(), "\\Draft");
+        assert_eq!(Flag::Recent.to_string(), "\\Recent");
+        assert_eq!(Flag::Custom("MyFlag".into()).to_string(), "MyFlag");
+    }
+
+    #[test]
+    fn test_store_action_prefix() {
+        assert_eq!(StoreAction::Add.to_imap_prefix(false), "+FLAGS");
+        assert_eq!(StoreAction::Add.to_imap_prefix(true), "+FLAGS.SILENT");
+        assert_eq!(StoreAction::Remove.to_imap_prefix(false), "-FLAGS");
+        assert_eq!(StoreAction::Remove.to_imap_prefix(true), "-FLAGS.SILENT");
+        assert_eq!(StoreAction::Set.to_imap_prefix(false), "FLAGS");
+        assert_eq!(StoreAction::Set.to_imap_prefix(true), "FLAGS.SILENT");
+    }
+}

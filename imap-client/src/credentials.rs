@@ -52,6 +52,7 @@ mod tests {
         let debug_str = format!("{:?}", pass);
         assert_eq!(debug_str, "\"***\"");
         assert!(!debug_str.contains("secret_pass"));
+        assert_eq!(pass.as_str(), "secret_pass");
     }
 
     #[test]
@@ -60,5 +61,6 @@ mod tests {
         let debug_str = format!("{:?}", token);
         assert_eq!(debug_str, "\"***\"");
         assert!(!debug_str.contains("ya29.token"));
+        assert_eq!(token.as_str(), "ya29.token");
     }
 }
