@@ -17,10 +17,12 @@ base64 = "0.22"
 
 [features]
 default = []
-condstore = []
-qresync = []
+# RFC 6851 — `MOVE` extension. Gates `Session::move_messages`.
 move_ext = []
-uidplus = []
+# Feature flags for CONDSTORE (RFC 7162), QRESYNC (RFC 7162), UIDPLUS
+# (RFC 4315), and other extensions are intentionally not declared yet —
+# they will be added when their commands are implemented. Declaring them
+# without an implementation misleads callers about what's supported.
 
 [dev-dependencies]
 trybuild = "1.0.116"
