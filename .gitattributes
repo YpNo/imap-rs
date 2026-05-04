@@ -1,4 +1,5 @@
-# Fuzz corpus entries are raw protocol bytes (with embedded CR/LF and
+# Fuzz seed inputs are raw protocol bytes (with embedded CR/LF and
 # 8-bit data). Disable text/eol normalisation so git never rewrites
-# them.
-imap-core/fuzz/corpus/** binary
+# them. Runtime corpus output lives under fuzz/corpus/ which is
+# .gitignored, so no rule is needed there.
+imap-core/fuzz/seeds/** binary
