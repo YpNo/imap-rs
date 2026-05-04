@@ -36,20 +36,34 @@ use imap_client::credentials::Password;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // connect_tls handles the TCP connection and TLS handshake automatically
-    let mut session = connect_tls("imap.example.com", 993).await?;
-    
-    // Login is only available on TLS sessions (compile-time enforced)
-    let auth_session = session.login("user", Password::new("pass")).await?;
-    
-    // Select a mailbox
-    let mut selected = auth_session.select("INBOX").await?;
-    
-    // Fetch some messages
-    let data = selected.fetch("1:*", "ALL").await?;
-    
+    // connect_tls performs TCP + TLS handshake (both with timeouts) and
+    // fetches CAPABILITY in the encrypted channel.
+    let session = connect_tls("imap.example.com", 993).await?;
+
+    // LOGIN is only available on TLS sessions (compile-time enforced).
+    // Username and password are quote-escaped per RFC 9051; passwords
+    // containing 8-bit or control bytes should use AUTHENTICATE PLAIN
+    // (`session.authenticate_plain(...)`).
+    let auth = session.login("user", Password::new("pass")).await?;
+
+    // SELECT a mailbox (transitions to Selected state).
+    let mut inbox = auth.select("INBOX").await?;
+
+    // FETCH returns structured results.
+    for msg in inbox.fetch("1:*", "BODY[]").await? {
+        println!("seq={} uid={:?} body={}B",
+                 msg.seq, msg.uid, msg.body.as_deref().map(|b| b.len()).unwrap_or(0));
+    }
+
     Ok(())
 }
+```
+
+### STARTTLS
+
+```rust
+let session = imap_tls::connect_starttls("imap.example.com", 143).await?;
+// Capabilities are *only* trusted from inside the TLS channel.
 ```
 
 ## Development & Testing
