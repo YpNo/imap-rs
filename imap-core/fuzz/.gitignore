@@ -1,6 +1,8 @@
-# Build artifacts and runtime fuzzer output. The seed corpus under
-# corpus/ is intentionally tracked so `cargo fuzz run` starts with
-# meaningful coverage out of the box.
+# Build artefacts and fuzzer runtime output. Hand-curated seed inputs
+# live under `seeds/<target>/` (tracked); `cargo fuzz run` writes
+# minimised mutations into `corpus/<target>/` which is intentionally
+# ignored to keep the repo small. See README.md for how to seed a run.
 target
 artifacts
 coverage
+corpus
