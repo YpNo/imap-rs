@@ -1,4 +1,6 @@
+# Build artifacts and runtime fuzzer output. The seed corpus under
+# corpus/ is intentionally tracked so `cargo fuzz run` starts with
+# meaningful coverage out of the box.
 target
-corpus
 artifacts
 coverage

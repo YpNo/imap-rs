@@ -1,0 +1,4 @@
+# Fuzz corpus entries are raw protocol bytes (with embedded CR/LF and
+# 8-bit data). Disable text/eol normalisation so git never rewrites
+# them.
+imap-core/fuzz/corpus/** binary
