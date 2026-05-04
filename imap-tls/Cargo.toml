@@ -8,10 +8,15 @@ publish.workspace = true
 
 [dependencies]
 imap-client = { path = "../imap-client" }
+imap-core = { path = "../imap-core" }
 rustls.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+bytes.workspace = true
 tokio-rustls = "0.26"
 webpki-roots = "1.0"
 rustls-pki-types = "1.14"
+
+[dev-dependencies]
+rcgen = "0.13"
