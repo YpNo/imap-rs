@@ -1,0 +1,8 @@
+error[E0599]: no method named `login` found for struct `Session<Unauthenticated, PlainText>` in the current scope
+  --> tests/ui/login_on_plain_text.rs:11:21
+   |
+11 |     let _ = session.login("user", Password::new("pass")).await;
+   |                     ^^^^^ method not found in `Session<Unauthenticated, PlainText>`
+   |
+   = note: the method was found for
+           - `Session<Unauthenticated, Tls>`

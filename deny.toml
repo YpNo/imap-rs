@@ -1,0 +1,46 @@
+[graph]
+targets = [
+    { triple = "aarch64-apple-darwin" },
+    { triple = "x86_64-apple-darwin" },
+    { triple = "x86_64-unknown-linux-gnu" },
+]
+
+[advisories]
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "ISC",
+    "CDLA-Permissive-2.0",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+deny = [
+    # General legacy/deprecated
+    { crate = "lazy_static", reason = "Use standard library's std::sync::OnceLock or once_cell" },
+    { crate = "failure", reason = "Use thiserror or anyhow" },
+    { crate = "net2", reason = "Deprecated in favor of socket2" },
+    { crate = "futures-cpupool", reason = "Use tokio or rayon" },
+
+    # Security: TLS and Crypto
+    { crate = "openssl", reason = "Use rustls for memory-safe TLS" },
+    { crate = "native-tls", reason = "Use rustls for memory-safe TLS" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

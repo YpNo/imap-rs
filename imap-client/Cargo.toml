@@ -1,0 +1,26 @@
+[package]
+name = "imap-client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+imap-core = { path = "../imap-core" }
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+bytes.workspace = true
+base64 = "0.22"
+
+[features]
+default = []
+condstore = []
+qresync = []
+move_ext = []
+uidplus = []
+
+[dev-dependencies]
+trybuild = "1.0.116"
