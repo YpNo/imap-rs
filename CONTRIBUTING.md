@@ -15,6 +15,22 @@ Thank you for your interest in contributing! To maintain the high quality and se
 - **Hexagonal Integrity**: Keep the protocol logic (`imap-core`) separate from IO and transport.
 - **Instrumentation**: Prefer `tracing` over `log`.
 
+## Commits and Changelog
+
+- **Conventional Commits**: every commit subject MUST follow
+  [Conventional Commits 1.0](https://www.conventionalcommits.org/en/v1.0.0/).
+  The `type(scope): summary` form makes Renovate's semantic grouping
+  and any future `release-please` automation possible.
+  - Common types in this repo: `feat`, `fix`, `chore`, `ci`, `docs`,
+    `refactor`, `test`, `perf`, `security`.
+  - Common scopes: `imap-core`, `imap-client`, `imap-tls`, omitted for
+    repo-wide changes.
+  - Example: `feat(imap-client): add AUTHENTICATE PLAIN`.
+- **Changelog**: every user-visible change appends an entry under
+  `[Unreleased]` in `CHANGELOG.md` with the appropriate
+  Added/Changed/Fixed/Security heading. The release workflow promotes
+  `[Unreleased]` to a versioned section on tag.
+
 ## Security
 
 - Never commit sensitive data (API keys, credentials).

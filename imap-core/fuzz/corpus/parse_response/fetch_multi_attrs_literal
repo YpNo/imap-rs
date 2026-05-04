@@ -1,0 +1,2 @@
+* 1 FETCH (UID 5 BODY[] {3}
+abc FLAGS (\Seen))
