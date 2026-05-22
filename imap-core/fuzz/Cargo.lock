@@ -51,19 +51,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "imap-core"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "thiserror",
-]
-
-[[package]]
 name = "imap-core-fuzz"
 version = "0.0.0"
 dependencies = [
- "imap-core",
+ "imap-rs-core",
  "libfuzzer-sys",
+]
+
+[[package]]
+name = "imap-rs-core"
+version = "0.2.0"
+dependencies = [
+ "bytes",
+ "thiserror",
 ]
 
 [[package]]

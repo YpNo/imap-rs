@@ -9,6 +9,8 @@ pub enum ClientError {
     Parse(#[from] ParseError),
     #[error("Connection closed")]
     ConnectionClosed,
+    #[error("response frame exceeded the maximum size of {max} bytes")]
+    FrameTooLarge { max: usize },
     #[error("Command failed: {0}")]
     CommandFailed(String),
     #[error("Capability not supported: {0}")]

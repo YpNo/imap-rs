@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300" role="img" aria-label="imap-rs — secure, async, pure-Rust IMAP">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B1221"/>
+      <stop offset="0.55" stop-color="#0E1A2E"/>
+      <stop offset="1" stop-color="#0A1020"/>
+    </linearGradient>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#18233D"/>
+      <stop offset="1" stop-color="#0E1729"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.16" cy="0.5" r="0.55">
+      <stop offset="0" stop-color="#F05A28" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#F05A28" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="wm" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#D6DEE8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- background panel (self-contained: reads on light & dark themes) -->
+  <rect x="0" y="0" width="1200" height="300" rx="24" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1200" height="300" rx="24" fill="url(#glow)"/>
+  <rect x="1.5" y="1.5" width="1197" height="297" rx="22.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.06" stroke-width="2"/>
+
+  <!-- hexagonal-architecture motif -->
+  <g fill="none" stroke="#F05A28" stroke-linejoin="round">
+    <polygon points="1160,150 1120,219 1040,219 1000,150 1040,81 1120,81" stroke-opacity="0.16" stroke-width="3"/>
+    <polygon points="1132,150 1106,195 1054,195 1028,150 1054,105 1106,105" stroke-opacity="0.10" stroke-width="3"/>
+  </g>
+
+  <!-- emblem: sealed, secure mail -->
+  <g>
+    <rect x="78" y="75" width="150" height="150" rx="34" fill="url(#tile)" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="2"/>
+
+    <!-- envelope -->
+    <g stroke="url(#wm)" stroke-width="7" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="108" y="120" width="90" height="64" rx="9"/>
+      <path d="M111 126 L153 158 L195 126"/>
+    </g>
+
+    <!-- gear badge (Rust / engineering) -->
+    <g transform="translate(222,92)">
+      <g fill="#F05A28">
+        <rect x="-22" y="-7" width="44" height="14" rx="4"/>
+        <rect x="-22" y="-7" width="44" height="14" rx="4" transform="rotate(45)"/>
+        <rect x="-22" y="-7" width="44" height="14" rx="4" transform="rotate(90)"/>
+        <rect x="-22" y="-7" width="44" height="14" rx="4" transform="rotate(135)"/>
+        <circle r="16"/>
+      </g>
+      <circle r="6" fill="#0E1729"/>
+    </g>
+
+    <!-- padlock badge (security) -->
+    <g transform="translate(222,208)">
+      <circle r="30" fill="#F05A28" stroke="#0B1221" stroke-width="4"/>
+      <path d="M-9 -2 v-7 a9 9 0 0 1 18 0 v7" fill="none" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round"/>
+      <rect x="-12" y="-2" width="24" height="20" rx="4" fill="#FFFFFF"/>
+      <circle cx="0" cy="6" r="3" fill="#F05A28"/>
+      <rect x="-1.6" y="7" width="3.2" height="6" rx="1.6" fill="#F05A28"/>
+    </g>
+  </g>
+
+  <!-- wordmark -->
+  <text x="298" y="172" font-family="'JetBrains Mono','Fira Code',ui-monospace,SFMono-Regular,Menlo,monospace" font-size="104" font-weight="800" letter-spacing="-3">
+    <tspan fill="url(#wm)">imap</tspan><tspan fill="#F05A28">-rs</tspan>
+  </text>
+
+  <!-- tagline -->
+  <text x="304" y="222" font-family="ui-sans-serif,Segoe UI,Helvetica,Arial,sans-serif" font-size="29" fill="#8B949E" letter-spacing="3">secure · async · pure-Rust IMAP</text>
+</svg>

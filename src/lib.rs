@@ -3,6 +3,8 @@
 //! This crate serves as the primary facade for the `imap-rs` project,
 //! aggregating the protocol core, client state machine, and TLS transport.
 
+#![forbid(unsafe_code)]
+
 /// Protocol types, AST, and zero-copy parser.
 pub use imap_core as core;
 

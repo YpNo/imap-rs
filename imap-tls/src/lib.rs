@@ -16,6 +16,8 @@
 //! For tests against an in-process TLS endpoint, use
 //! [`handshake_with_connector`] with a custom [`TlsConnector`].
 
+#![forbid(unsafe_code)]
+
 use std::sync::Arc;
 use std::time::Duration;
 

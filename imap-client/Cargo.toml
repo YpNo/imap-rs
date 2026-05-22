@@ -18,13 +18,14 @@ include = [
     "Cargo.toml",
     "README.md",
     "LICENSE",
+    "CHANGELOG.md",
 ]
 
 [lib]
 name = "imap_client"
 
 [dependencies]
-imap-core = { package = "imap-rs-core", path = "../imap-core", version = "0.1.0" }
+imap-core = { package = "imap-rs-core", path = "../imap-core", version = "0.2.0" }
 tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

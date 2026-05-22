@@ -1,4 +1,16 @@
+<p align="center">
+  <img src="./assets/banner.svg" alt="imap-rs — secure, async, pure-Rust IMAP" width="100%">
+</p>
+
 # imap-rs
+
+[![CI](https://github.com/YpNo/imap-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/YpNo/imap-rs/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/imap-rs.svg)](https://crates.io/crates/imap-rs)
+[![GitHub release](https://img.shields.io/github/v/release/YpNo/imap-rs?sort=semver)](https://github.com/YpNo/imap-rs/releases/latest)
+[![docs.rs](https://docs.rs/imap-rs/badge.svg)](https://docs.rs/imap-rs)
+[![codecov](https://codecov.io/gh/YpNo/imap-rs/branch/main/graph/badge.svg)](https://codecov.io/gh/YpNo/imap-rs)
+[![MSRV](https://img.shields.io/badge/MSRV-1.95.0-blue.svg)](https://github.com/YpNo/imap-rs)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A modern, high-performance, and security-first IMAP library for Rust.
 
@@ -31,8 +43,8 @@ imap-rs = "0.1"
 ### Basic Example
 
 ```rust
-use imap_tls::connect_tls;
-use imap_client::credentials::Password;
+use imap_rs::connect_tls;
+use imap_rs::credentials::Password;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -62,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### STARTTLS
 
 ```rust
-let session = imap_tls::connect_starttls("imap.example.com", 143).await?;
+let session = imap_rs::connect_starttls("imap.example.com", 143).await?;
 // Capabilities are *only* trusted from inside the TLS channel.
 ```
 

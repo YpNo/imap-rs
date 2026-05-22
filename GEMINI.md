@@ -84,7 +84,7 @@ cargo test --workspace --all-features
 cargo tarpaulin --all-features --workspace --timeout 120 --out xml
 
 # Update UI test expectations (after toolchain changes)
-TRYBUILD=overwrite cargo test -p imap-client --test type_state_tests
+TRYBUILD=overwrite cargo test -p imap-rs-client --test type_state_tests
 
 # Run Lint checks
 cargo clippy --workspace -- -D warnings

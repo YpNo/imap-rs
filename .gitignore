@@ -21,5 +21,10 @@ target
 #.idea/
 .vscode/
 
+# Local secrets / environment overrides — never commit
+.env
+.env.*
+!.env.example
+
 cobertura.xml
 tarpaulin-report.html

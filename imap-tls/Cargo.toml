@@ -19,14 +19,15 @@ include = [
     "Cargo.toml",
     "README.md",
     "LICENSE",
+    "CHANGELOG.md",
 ]
 
 [lib]
 name = "imap_tls"
 
 [dependencies]
-imap-client = { package = "imap-rs-client", path = "../imap-client", version = "0.1.0" }
-imap-core = { package = "imap-rs-core", path = "../imap-core", version = "0.1.0" }
+imap-client = { package = "imap-rs-client", path = "../imap-client", version = "0.2.0" }
+imap-core = { package = "imap-rs-core", path = "../imap-core", version = "0.2.0" }
 rustls.workspace = true
 tokio.workspace = true
 thiserror.workspace = true

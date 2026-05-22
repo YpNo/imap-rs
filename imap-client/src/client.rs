@@ -25,7 +25,7 @@ use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
 
 use crate::error::ClientError;
 use imap_core::ast::{Response, Status};
-use imap_core::parser::parse_response;
+use imap_core::parser::{MAX_LITERAL_SIZE, parse_response};
 
 /// Reply channel for tagged-response delivery.
 type TaggedReply = oneshot::Sender<Result<Vec<u8>, ClientError>>;
@@ -35,6 +35,15 @@ type PendingCommands = Arc<Mutex<HashMap<String, TaggedReply>>>;
 /// channel. Slow consumers experience [`broadcast::error::RecvError::Lagged`]
 /// once they fall this far behind.
 const EVENT_CHANNEL_CAP: usize = 1024;
+
+/// Hard ceiling on the bytes buffered for a single in-flight response frame.
+/// Bounds the read buffer so a hostile server cannot exhaust memory by
+/// streaming a frame that never terminates (e.g. an unterminated quoted
+/// string, or a line with no CRLF) — the parser would otherwise keep
+/// returning [`ParseError::Incomplete`](imap_core::error::ParseError) while
+/// the buffer grows without limit. Sized to admit one maximal literal plus
+/// protocol overhead.
+const MAX_FRAME_SIZE: usize = MAX_LITERAL_SIZE + 64 * 1024;
 
 /// Items written by [`write_loop`].
 enum WriteRequest {
@@ -74,6 +83,7 @@ impl RawClient {
             read_half,
             Arc::clone(&pending_commands),
             event_tx.clone(),
+            MAX_FRAME_SIZE,
         ));
         tokio::spawn(write_loop(
             write_half,
@@ -211,10 +221,21 @@ async fn write_loop<W>(
     }
 }
 
+/// Drain every pending tagged-command waiter, delivering a freshly built
+/// error to each. `make_err` is a factory because [`ClientError`] is not
+/// `Clone` (it wraps `std::io::Error`).
+async fn fail_all_pending(pending: &PendingCommands, make_err: impl Fn() -> ClientError) {
+    let mut map = pending.lock().await;
+    for (_, tx) in map.drain() {
+        let _ = tx.send(Err(make_err()));
+    }
+}
+
 async fn read_loop<R>(
     mut read_half: R,
     pending_commands: PendingCommands,
     event_tx: broadcast::Sender<Vec<u8>>,
+    max_frame_size: usize,
 ) where
     R: AsyncRead + Unpin,
 {
@@ -224,10 +245,7 @@ async fn read_loop<R>(
         match read_half.read_buf(&mut buffer).await {
             Ok(0) => {
                 // EOF: notify any pending commands that we're closing.
-                let mut map = pending_commands.lock().await;
-                for (_, tx) in map.drain() {
-                    let _ = tx.send(Err(ClientError::ConnectionClosed));
-                }
+                fail_all_pending(&pending_commands, || ClientError::ConnectionClosed).await;
                 break;
             }
             Ok(_) => {
@@ -257,12 +275,21 @@ async fn read_loop<R>(
                     let frame = buffer.split_to(consumed).to_vec();
                     dispatch_frame(routing, frame, &pending_commands, &event_tx).await;
                 }
+
+                // Complete frames have been split off; any residue is a single
+                // still-incomplete frame. Refuse to buffer it past the ceiling
+                // so a server streaming a never-terminating frame cannot
+                // exhaust memory.
+                if buffer.len() > max_frame_size {
+                    fail_all_pending(&pending_commands, || ClientError::FrameTooLarge {
+                        max: max_frame_size,
+                    })
+                    .await;
+                    break;
+                }
             }
             Err(_) => {
-                let mut map = pending_commands.lock().await;
-                for (_, tx) in map.drain() {
-                    let _ = tx.send(Err(ClientError::ConnectionClosed));
-                }
+                fail_all_pending(&pending_commands, || ClientError::ConnectionClosed).await;
                 break;
             }
         }
@@ -490,5 +517,44 @@ mod tests {
             result,
             Err(ClientError::ConnectionClosed) | Err(ClientError::Timeout)
         ));
+    }
+
+    #[tokio::test]
+    async fn test_unterminated_frame_is_bounded() {
+        // A server that streams a frame which never terminates (no CRLF)
+        // must not grow the read buffer without limit. Drive `read_loop`
+        // directly with a tiny ceiling so the test stays fast — exercising
+        // the real 64 MiB `MAX_FRAME_SIZE` would allocate 64 MiB.
+        let (client_io, mut server_io) = duplex(8192);
+
+        let pending: PendingCommands = Arc::new(Mutex::new(HashMap::new()));
+        let (event_tx, _event_rx) = broadcast::channel(EVENT_CHANNEL_CAP);
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        pending.lock().await.insert("A0001".to_string(), reply_tx);
+
+        let max_frame_size = 64;
+        let loop_task = tokio::spawn(read_loop(
+            client_io,
+            Arc::clone(&pending),
+            event_tx,
+            max_frame_size,
+        ));
+
+        // Valid resp-text bytes that never reach a CRLF -> parser stays
+        // `Incomplete` while the buffer grows past the ceiling.
+        server_io.write_all(b"* OK ").await.unwrap();
+        server_io
+            .write_all(&vec![b'a'; max_frame_size * 2])
+            .await
+            .unwrap();
+
+        let result = reply_rx.await.unwrap();
+        assert!(
+            matches!(result, Err(ClientError::FrameTooLarge { max }) if max == max_frame_size),
+            "expected FrameTooLarge, got {result:?}"
+        );
+        // The loop must terminate rather than spin on the oversized buffer.
+        loop_task.await.unwrap();
     }
 }
