@@ -13,11 +13,11 @@ A modern, high-performance, and security-first IMAP library for Rust.
 
 ## Project Structure
 
-The project is split into three core crates to ensure a clean separation of concerns:
+The project is split into three core crates to ensure a clean separation of concerns. The `imap-rs` umbrella crate re-exports all three:
 
-- `imap-core`: Protocol types, AST, and the zero-copy parser (no I/O).
-- `imap-client`: Async session management, command pipelining, and state machine.
-- `imap-tls`: High-level secure connection wrapper using `rustls`.
+- `imap-rs-core` (re-exported as `imap_rs::core`): Protocol types, AST, and the zero-copy parser (no I/O).
+- `imap-rs-client` (re-exported as `imap_rs::client`): Async session management, command pipelining, and state machine.
+- `imap-rs-tls` (re-exported as `imap_rs::tls`): High-level secure connection wrapper using `rustls`.
 
 ## Usage
 
@@ -25,7 +25,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-imap-rs = { git = "https://github.com/YpNo/imap-rs" }
+imap-rs = "0.1"
 ```
 
 ### Basic Example
@@ -86,7 +86,7 @@ cargo tarpaulin --all-features --workspace --timeout 120 --out xml
 ### Troubleshooting UI Tests
 If you see a `mismatch` error in `tests/ui/` after updating the compiler or changing error messages, you can "bless" the new output:
 ```bash
-TRYBUILD=overwrite cargo test -p imap-client --test type_state_tests
+TRYBUILD=overwrite cargo test -p imap-rs-client --test type_state_tests
 ```
 Verify the changes with `git diff` before committing.
 

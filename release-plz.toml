@@ -1,0 +1,10 @@
+# release-plz configuration — https://release-plz.dev/docs/config
+[workspace]
+# Keep a per-crate CHANGELOG in Keep-a-Changelog style.
+changelog_update = true
+# Run cargo-semver-checks before each release to catch accidental API breaks.
+semver_check = true
+# Create a GitHub release for each published crate.
+git_release_enabled = true
+# Don't open release PRs for transitive dependency-only bumps without a real change.
+dependencies_update = false
