@@ -1,121 +1,42 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+This is the changelog for the umbrella `imap-rs` crate. Each member crate keeps
+its own changelog: [`imap-rs-core`](imap-core/CHANGELOG.md),
+[`imap-rs-client`](imap-client/CHANGELOG.md), and
+[`imap-rs-tls`](imap-tls/CHANGELOG.md).
+
 ## [Unreleased]
 
-## [0.2.0](https://github.com/YpNo/imap-rs/releases/tag/imap-rs-v0.2.0) - 2026-05-23
+## [0.2.0] - 2026-05-23
+
+Initial release published to crates.io.
 
 ### Added
 
-- *(imap-client+imap-tls)* P0/P1 hardening, STARTTLS, missing commands
-- *(imap-core)* RFC 9051 recursive-descent parser
-- feat/init
-
-### Fixed
-
-- *(imap-core/fuzz)* split tracked seeds from runtime corpus output
-- *(ci)* drop Sonar coverage hookup; keep Codecov as the coverage host
-- *(ci)* make Sonar sources and tests disjoint
-- fixing CI
-- fixing CI
-- fixing CI
-- fixing CI
-
-### Other
-
-- Prepare the crate release ([#5](https://github.com/YpNo/imap-rs/pull/5))
-- Adding ATK rule and Add .claude to gitignore
-- codify Conventional Commits and changelog flow in CONTRIBUTING
-- tighten Sonar scope and Renovate cadence
-- *(imap-core/fuzz)* seed parse_response corpus with 44 diverse inputs
-- add CHANGELOG.md (Keep a Changelog) with v0.1.0 retrospective
-- fixing codecov and locked build
-- pin floating actions to commit SHAs; add examples-build and fuzz-build gates
-- *(imap-client,imap-core)* drop unimplemented feature flags; refresh benches
-- align README example with new API; remove orphan example
-- Enhancement
-- Code coverage enhancement
-- Initial commit
-
-### Added
-
-- _(nothing yet)_
-
-### Changed
-
-- _(nothing yet)_
-
-### Fixed
-
-- _(nothing yet)_
-
-## [0.1.0] - 2026-05-04
-
-Initial public release of the workspace.
-
-### Added
-
-- **`imap-core`** — RFC 9051 zero-copy recursive-descent parser. Handles
-  all status responses (`OK`, `NO`, `BAD`, `PREAUTH`, `BYE`) with full
-  resp-text-code coverage (`ALERT`, `BADCHARSET`, `CAPABILITY`, `PARSE`,
-  `PERMANENTFLAGS`, `READ-ONLY`, `READ-WRITE`, `TRYCREATE`, `UIDNEXT`,
-  `UIDVALIDITY`, `UNSEEN`, plus generic `Other`); data responses
-  (`CAPABILITY`, `LIST`, `LSUB`, `STATUS`, `SEARCH`, `FLAGS`, `EXISTS`,
-  `RECENT`, `EXPUNGE`, `FETCH`); and `FETCH` attributes (`FLAGS`,
-  `INTERNALDATE`, `RFC822[.SIZE|.HEADER|.TEXT]`, `ENVELOPE`, `BODY`,
-  `BODYSTRUCTURE`, `BODY[<section>]<<origin>>`, `UID`).
-- **DoS guard**: `MAX_LITERAL_SIZE = 64 MiB` cap on a single literal,
-  surfaced as `ParseError::LiteralTooLarge` before any allocation.
-- **`imap-client`** — async type-state IMAP session: `Session<State,
-  Transport>` with `Unauthenticated → Authenticated → Selected`
-  transitions and `PlainText`/`Tls` transport markers. `LOGIN` is
-  compile-time gated to `Session<Unauthenticated, Tls>`.
-- Commands: `LOGIN`, `AUTHENTICATE PLAIN` (SASL via `base64`),
-  `LOGOUT`, `NOOP`, `CHECK`, `CAPABILITY`, `SELECT`, `EXAMINE`, `LIST`,
-  `FETCH` (raw + structured `FetchResult`), `STORE`/`UID STORE`,
-  `SEARCH`/`UID SEARCH`, `EXPUNGE`, `CLOSE`, `UNSELECT`, `IDLE`,
-  `MOVE` (feature-gated).
-- **Credential hygiene**: `Password` and `OAuthToken` use `zeroize` and
-  obfuscate `Debug`. `Password::as_imap_quoted` performs RFC 9051
-  quoted-string escaping (`\`, `"`); 8-bit / control-byte secrets are
-  rejected with a pointer to `AUTHENTICATE PLAIN`.
-- **Dispatcher** (`RawClient`): pipelined commands routed by tag,
-  untagged frames broadcast on a 1024-slot `tokio::sync::broadcast`
-  channel. Tagged `NO`/`BAD` responses become
-  `ClientError::CommandFailed` carrying the server's resp-text.
-- **`IDLE`** (RFC 2177): proper `+ idling` continuation handshake;
-  `IdleHandle::stop` writes `DONE` and awaits the tagged `OK` with its
-  own timeout. Capability-gated.
-- **`imap-tls`** — TLS adapter using `rustls` + `webpki-roots`. Two
-  entry points: `connect_tls` (port 993, direct TLS) and
-  `connect_starttls` (port 143, cleartext greeting → STARTTLS upgrade
-  → re-fetch CAPABILITY in the encrypted channel — pre-TLS server
-  capabilities are never trusted).
-- TCP-connect and TLS-handshake timeouts (default 30 s, overridable
-  via `_with_timeouts` variants).
-- Public `handshake_with_connector` and `starttls_with_connector` for
-  custom `TlsConnector` use (e.g. tests with self-signed certs).
-- **CI gates**: `cargo fmt`, `cargo clippy -D warnings`, `cargo test
-  --all-features`, `cargo build --examples`, `cargo check` on the fuzz
-  manifest, `cargo doc -D warnings`, `cargo deny`, SonarQube,
-  Codecov, weekly security audits. All GitHub Actions pinned to
-  commit SHAs.
-- **In-process TLS integration tests** (4) using `rcgen` self-signed
-  certs and `tokio_rustls::TlsAcceptor`: full handshake, greeting-with-
-  `[CAPABILITY]` round-trip avoidance, full STARTTLS upgrade.
-
-### Fixed
-
-- _(initial release — no prior versions to fix)_
+- Umbrella crate that re-exports the three workspace crates and provides
+  ergonomic top-level access:
+  - `imap_rs::core` → [`imap-rs-core`](https://crates.io/crates/imap-rs-core):
+    protocol types and zero-copy parser (no I/O).
+  - `imap_rs::client` → [`imap-rs-client`](https://crates.io/crates/imap-rs-client):
+    async, type-state session and command dispatcher.
+  - `imap_rs::tls` → [`imap-rs-tls`](https://crates.io/crates/imap-rs-tls):
+    `rustls`-based secure transport (TLS and STARTTLS).
+- Convenience re-exports: `Session`, `connect_tls`, `connect_starttls`, and
+  `credentials::{Password, OAuthToken}`.
 
 ### Security
 
-- 100% safe Rust; no `unsafe` blocks, no FFI dependencies, only
-  `rustls` for TLS.
+- 100% safe Rust across every crate (`#![forbid(unsafe_code)]`).
+- `rustls`-only TLS (no OpenSSL / native-tls); STARTTLS capabilities are
+  re-validated inside the encrypted channel.
+- Credentials are zeroized on drop and redacted in `Debug`.
+- Parser is bounds-checked, literal-size-capped, and fuzzed; the client bounds
+  its read buffer against unbounded-memory denial-of-service.
 
-[Unreleased]: https://github.com/YpNo/imap-rs/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/YpNo/imap-rs/releases/tag/v0.1.0
+[Unreleased]: https://github.com/YpNo/imap-rs/compare/imap-rs-v0.2.0...HEAD
+[0.2.0]: https://github.com/YpNo/imap-rs/releases/tag/imap-rs-v0.2.0

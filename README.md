@@ -37,6 +37,35 @@ Contributions of every size are welcome — but experienced maintainer reviews a
 - **IMAP4rev2 Ready**: Designed for RFC 9051 with backward compatibility via automatic capability negotiation.
 - **Async Native**: Built on `tokio` for high-concurrency workloads.
 
+## Why another IMAP library?
+
+`imap-rs` exists to explore a deliberately different set of trade-offs, with a
+few opinionated defaults:
+
+- **Security as the default, not a configuration choice.** TLS is `rustls`-only
+  (no OpenSSL / native-tls backend to misconfigure); credentials are `zeroize`d
+  and redacted in `Debug`; `#![forbid(unsafe_code)]` is enforced across every
+  crate; the parser is bounds-checked, literal-size-capped, and fuzzed; and
+  STARTTLS re-validates capabilities *inside* the encrypted channel.
+- **Illegal states that don't compile.** The session is type-stated over both
+  protocol phase and transport (`Session<Unauthenticated|Authenticated|Selected,
+  PlainText|Tls>`), so mistakes like `LOGIN` over plaintext or `FETCH` before
+  authentication are caught by the compiler rather than at runtime.
+- **A zero-copy parser with no parser dependency.** The RFC 9051 parser is
+  hand-rolled and reads directly from the network buffer (`&[u8]`), keeping
+  allocations and the dependency tree small.
+- **Hexagonal, layered crates.** Protocol (`imap-rs-core`, zero I/O), session
+  logic (`imap-rs-client`), and transport (`imap-rs-tls`) are separate crates —
+  depend on just the parser, or swap the transport, without pulling in the rest.
+- **A modern baseline.** Rust 2024 edition, `tokio`-native, and IMAP4rev2
+  (RFC 9051)-first with automatic capability negotiation.
+
+This isn't a claim that the alternatives are doing anything wrong — it's a
+from-scratch take that optimizes for security defaults, compile-time
+correctness, and a minimal dependency surface. (See the
+[status note](#project-status--call-for-maintainers) above: the library is
+young and not yet battle-tested.)
+
 ## Project Structure
 
 The project is split into three core crates to ensure a clean separation of concerns. The `imap-rs` umbrella crate re-exports all three:
