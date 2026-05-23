@@ -332,7 +332,7 @@ checksum = "4f467dd6dccf739c208452f8014c75c18bb8301b050ad1cfb27153803edb0f51"
 
 [[package]]
 name = "imap-rs"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "imap-rs-client",
  "imap-rs-core",
@@ -341,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "imap-rs-client"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64",
  "bytes",
@@ -355,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "imap-rs-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "criterion",
@@ -364,7 +364,7 @@ dependencies = [
 
 [[package]]
 name = "imap-rs-tls"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "imap-rs-client",
