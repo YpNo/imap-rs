@@ -4,7 +4,7 @@
 
 We take the security of `imap-rs` seriously. If you believe you have found a security vulnerability, please do NOT file a public issue. Instead, send a private email to:
 
-**ypno+security@gmail.com**
+**ypno.gh+security@gmail.com**
 
 Please include as much information as possible, including:
 - A description of the vulnerability.

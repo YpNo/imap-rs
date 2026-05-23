@@ -14,6 +14,20 @@
 
 A modern, high-performance, and security-first IMAP library for Rust.
 
+## Project Status & Call for Maintainers
+
+> **Heads-up:** `imap-rs` has so far been **mainly "vibe coded"** — built rapidly with heavy AI assistance rather than by a seasoned IMAP/Rust team. It compiles cleanly, is panic-free in its production paths, and ships with unit + integration tests, a parser fuzz target, CI, and security hardening (`rustls`-only TLS, `zeroize`d credentials, `#![forbid(unsafe_code)]` across all crates). However, it has **not** yet been battle-tested in production or independently audited.
+
+I'm now looking for **Senior Rust developers** to help **maintain and steward** this project long-term — reviewing the architecture and protocol correctness, hardening edge cases, expanding IMAP4rev2 / extension coverage, and guiding releases.
+
+If you have deep Rust and/or IMAP experience and want to get involved:
+
+- Open or comment on a [GitHub issue](https://github.com/YpNo/imap-rs/issues), or start a [discussion](https://github.com/YpNo/imap-rs/discussions)
+- Let me know you're interested in a **maintainer** role
+- See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow, quality bar, and coding standards
+
+Contributions of every size are welcome — but experienced maintainer reviews are what the project needs most right now.
+
 ## Features
 
 - **Security First**: 100% Safe Rust. Built-in protection against credential leaks using `zeroize`.
