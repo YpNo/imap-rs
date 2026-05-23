@@ -25,7 +25,7 @@ and is transport-agnostic — bring your own `AsyncRead + AsyncWrite` stream.
 
 ```toml
 [dependencies]
-imap-rs-client = "0.1"
+imap-rs-client = "0.2"
 ```
 
 > Most users should depend on the umbrella [`imap-rs`](https://crates.io/crates/imap-rs)

@@ -16,7 +16,7 @@ and has no network dependencies, which keeps it trivially testable and reusable.
 
 ```toml
 [dependencies]
-imap-rs-core = "0.1"
+imap-rs-core = "0.2"
 ```
 
 ```rust

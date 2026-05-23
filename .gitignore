@@ -21,6 +21,11 @@ target
 #.idea/
 .vscode/
 
+# Local Claude config — keep the committed rule/skill symlinks, ignore the rest
+.claude/*
+!.claude/rules
+!.claude/skills
+
 # Local secrets / environment overrides — never commit
 .env
 .env.*

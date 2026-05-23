@@ -51,7 +51,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-imap-rs = "0.1"
+imap-rs = "0.2"
 ```
 
 ### Basic Example

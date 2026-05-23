@@ -22,7 +22,7 @@ establishes encrypted IMAP connections and returns a ready-to-use
 
 ```toml
 [dependencies]
-imap-rs-tls = "0.1"
+imap-rs-tls = "0.2"
 ```
 
 ```rust
