@@ -1,6 +1,32 @@
+<p align="center">
+  <img src="./assets/banner.svg" alt="imap-rs — secure, async, pure-Rust IMAP" width="100%">
+</p>
+
 # imap-rs
 
+[![CI](https://github.com/YpNo/imap-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/YpNo/imap-rs/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/imap-rs.svg)](https://crates.io/crates/imap-rs)
+[![GitHub release](https://img.shields.io/github/v/release/YpNo/imap-rs?sort=semver)](https://github.com/YpNo/imap-rs/releases/latest)
+[![docs.rs](https://docs.rs/imap-rs/badge.svg)](https://docs.rs/imap-rs)
+[![codecov](https://codecov.io/gh/YpNo/imap-rs/branch/main/graph/badge.svg)](https://codecov.io/gh/YpNo/imap-rs)
+[![MSRV](https://img.shields.io/badge/MSRV-1.95.0-blue.svg)](https://github.com/YpNo/imap-rs)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A modern, high-performance, and security-first IMAP library for Rust.
+
+## Project Status & Call for Maintainers
+
+> **Heads-up:** `imap-rs` has so far been **mainly "vibe coded"** — built rapidly with heavy AI assistance rather than by a seasoned IMAP/Rust team. It compiles cleanly, is panic-free in its production paths, and ships with unit + integration tests, a parser fuzz target, CI, and security hardening (`rustls`-only TLS, `zeroize`d credentials, `#![forbid(unsafe_code)]` across all crates). However, it has **not** yet been battle-tested in production or independently audited.
+
+I'm now looking for **Senior Rust developers** to help **maintain and steward** this project long-term — reviewing the architecture and protocol correctness, hardening edge cases, expanding IMAP4rev2 / extension coverage, and guiding releases.
+
+If you have deep Rust and/or IMAP experience and want to get involved:
+
+- Open or comment on a [GitHub issue](https://github.com/YpNo/imap-rs/issues), or start a [discussion](https://github.com/YpNo/imap-rs/discussions)
+- Let me know you're interested in a **maintainer** role
+- See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow, quality bar, and coding standards
+
+Contributions of every size are welcome — but experienced maintainer reviews are what the project needs most right now.
 
 ## Features
 
@@ -13,11 +39,11 @@ A modern, high-performance, and security-first IMAP library for Rust.
 
 ## Project Structure
 
-The project is split into three core crates to ensure a clean separation of concerns:
+The project is split into three core crates to ensure a clean separation of concerns. The `imap-rs` umbrella crate re-exports all three:
 
-- `imap-core`: Protocol types, AST, and the zero-copy parser (no I/O).
-- `imap-client`: Async session management, command pipelining, and state machine.
-- `imap-tls`: High-level secure connection wrapper using `rustls`.
+- `imap-rs-core` (re-exported as `imap_rs::core`): Protocol types, AST, and the zero-copy parser (no I/O).
+- `imap-rs-client` (re-exported as `imap_rs::client`): Async session management, command pipelining, and state machine.
+- `imap-rs-tls` (re-exported as `imap_rs::tls`): High-level secure connection wrapper using `rustls`.
 
 ## Usage
 
@@ -25,14 +51,14 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-imap-rs = { git = "https://github.com/YpNo/imap-rs" }
+imap-rs = "0.2"
 ```
 
 ### Basic Example
 
 ```rust
-use imap_tls::connect_tls;
-use imap_client::credentials::Password;
+use imap_rs::connect_tls;
+use imap_rs::credentials::Password;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -62,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### STARTTLS
 
 ```rust
-let session = imap_tls::connect_starttls("imap.example.com", 143).await?;
+let session = imap_rs::connect_starttls("imap.example.com", 143).await?;
 // Capabilities are *only* trusted from inside the TLS channel.
 ```
 
@@ -86,7 +112,7 @@ cargo tarpaulin --all-features --workspace --timeout 120 --out xml
 ### Troubleshooting UI Tests
 If you see a `mismatch` error in `tests/ui/` after updating the compiler or changing error messages, you can "bless" the new output:
 ```bash
-TRYBUILD=overwrite cargo test -p imap-client --test type_state_tests
+TRYBUILD=overwrite cargo test -p imap-rs-client --test type_state_tests
 ```
 Verify the changes with `git diff` before committing.
 

@@ -1,10 +1,29 @@
 [package]
-name = "imap-core"
+name = "imap-rs-core"
+description = "Zero-copy IMAP4rev2 protocol types and parser (no I/O). Core of the imap-rs library."
+documentation = "https://docs.rs/imap-rs-core"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 publish.workspace = true
+include = [
+    "src/**/*",
+    "benches/**/*",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+]
+
+[lib]
+name = "imap_core"
 
 [dependencies]
 bytes.workspace = true

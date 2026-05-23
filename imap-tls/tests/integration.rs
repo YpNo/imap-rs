@@ -43,17 +43,26 @@ fn build_test_pki() -> TestPki {
 }
 
 fn server_acceptor(pki: &TestPki) -> TlsAcceptor {
-    let config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(pki.server_cert_chain.clone(), pki.server_key.clone_key())
-        .unwrap();
+    let config = ServerConfig::builder_with_provider(Arc::new(
+        tokio_rustls::rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| format!("TLS config failed: {e}"))
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(pki.server_cert_chain.clone(), pki.server_key.clone_key())
+    .unwrap();
     TlsAcceptor::from(Arc::new(config))
 }
 
 fn client_connector(pki: &TestPki) -> TlsConnector {
-    let config = ClientConfig::builder()
-        .with_root_certificates(pki.client_root_store.clone())
-        .with_no_client_auth();
+    let config = ClientConfig::builder_with_provider(Arc::new(
+        tokio_rustls::rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .expect("TLS config failed")
+    .with_root_certificates(pki.client_root_store.clone())
+    .with_no_client_auth();
     TlsConnector::from(Arc::new(config))
 }
 

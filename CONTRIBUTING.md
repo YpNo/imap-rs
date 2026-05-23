@@ -20,7 +20,8 @@ Thank you for your interest in contributing! To maintain the high quality and se
 - **Conventional Commits**: every commit subject MUST follow
   [Conventional Commits 1.0](https://www.conventionalcommits.org/en/v1.0.0/).
   The `type(scope): summary` form makes Renovate's semantic grouping
-  and any future `release-please` automation possible.
+  and the `release-plz` automation (see `.github/workflows/release-plz.yml`)
+  possible.
   - Common types in this repo: `feat`, `fix`, `chore`, `ci`, `docs`,
     `refactor`, `test`, `perf`, `security`.
   - Common scopes: `imap-core`, `imap-client`, `imap-tls`, omitted for

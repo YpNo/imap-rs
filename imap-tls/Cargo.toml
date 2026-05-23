@@ -1,14 +1,33 @@
 [package]
-name = "imap-tls"
+name = "imap-rs-tls"
+description = "rustls-based secure transport (TLS and STARTTLS) for imap-rs. No OpenSSL, no native-tls."
+documentation = "https://docs.rs/imap-rs-tls"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 publish.workspace = true
+include = [
+    "src/**/*",
+    "examples/**/*",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+]
+
+[lib]
+name = "imap_tls"
 
 [dependencies]
-imap-client = { path = "../imap-client" }
-imap-core = { path = "../imap-core" }
+imap-client = { package = "imap-rs-client", path = "../imap-client", version = "0.2.0" }
+imap-core = { package = "imap-rs-core", path = "../imap-core", version = "0.2.0" }
 rustls.workspace = true
 tokio.workspace = true
 thiserror.workspace = true

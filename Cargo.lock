@@ -331,12 +331,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f467dd6dccf739c208452f8014c75c18bb8301b050ad1cfb27153803edb0f51"
 
 [[package]]
-name = "imap-client"
-version = "0.1.0"
+name = "imap-rs"
+version = "0.2.0"
+dependencies = [
+ "imap-rs-client",
+ "imap-rs-core",
+ "imap-rs-tls",
+]
+
+[[package]]
+name = "imap-rs-client"
+version = "0.2.0"
 dependencies = [
  "base64",
  "bytes",
- "imap-core",
+ "imap-rs-core",
  "thiserror",
  "tokio",
  "tracing",
@@ -345,8 +354,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "imap-core"
-version = "0.1.0"
+name = "imap-rs-core"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "criterion",
@@ -354,12 +363,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "imap-tls"
-version = "0.1.0"
+name = "imap-rs-tls"
+version = "0.2.0"
 dependencies = [
  "bytes",
- "imap-client",
- "imap-core",
+ "imap-rs-client",
+ "imap-rs-core",
  "rcgen",
  "rustls",
  "rustls-pki-types",
@@ -681,6 +690,7 @@ dependencies = [
  "aws-lc-rs",
  "log",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",

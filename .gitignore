@@ -20,7 +20,16 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 .vscode/
-.claude/
+
+# Local Claude config — keep the committed rule/skill symlinks, ignore the rest
+.claude/*
+!.claude/rules
+!.claude/skills
+
+# Local secrets / environment overrides — never commit
+.env
+.env.*
+!.env.example
 
 cobertura.xml
 tarpaulin-report.html

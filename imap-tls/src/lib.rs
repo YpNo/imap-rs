@@ -16,6 +16,8 @@
 //! For tests against an in-process TLS endpoint, use
 //! [`handshake_with_connector`] with a custom [`TlsConnector`].
 
+#![forbid(unsafe_code)]
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -102,9 +104,13 @@ pub async fn connect_starttls_with_timeouts(
 pub fn default_tls_connector() -> Result<TlsConnector, ClientError> {
     let mut root_store = RootCertStore::empty();
     root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let config = ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
+    let config = ClientConfig::builder_with_provider(Arc::new(
+        tokio_rustls::rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| ClientError::CommandFailed(format!("TLS config failed: {e}")))?
+    .with_root_certificates(root_store)
+    .with_no_client_auth();
     Ok(TlsConnector::from(Arc::new(config)))
 }
 
