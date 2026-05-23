@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/YpNo/imap-rs/releases/tag/imap-rs-v0.2.0) - 2026-05-23
+
+### Added
+
+- *(imap-client+imap-tls)* P0/P1 hardening, STARTTLS, missing commands
+- *(imap-core)* RFC 9051 recursive-descent parser
+- feat/init
+
+### Fixed
+
+- *(imap-core/fuzz)* split tracked seeds from runtime corpus output
+- *(ci)* drop Sonar coverage hookup; keep Codecov as the coverage host
+- *(ci)* make Sonar sources and tests disjoint
+- fixing CI
+- fixing CI
+- fixing CI
+- fixing CI
+
+### Other
+
+- Prepare the crate release ([#5](https://github.com/YpNo/imap-rs/pull/5))
+- Adding ATK rule and Add .claude to gitignore
+- codify Conventional Commits and changelog flow in CONTRIBUTING
+- tighten Sonar scope and Renovate cadence
+- *(imap-core/fuzz)* seed parse_response corpus with 44 diverse inputs
+- add CHANGELOG.md (Keep a Changelog) with v0.1.0 retrospective
+- fixing codecov and locked build
+- pin floating actions to commit SHAs; add examples-build and fuzz-build gates
+- *(imap-client,imap-core)* drop unimplemented feature flags; refresh benches
+- align README example with new API; remove orphan example
+- Enhancement
+- Code coverage enhancement
+- Initial commit
+
 ### Added
 
 - _(nothing yet)_
