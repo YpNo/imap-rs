@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/YpNo/imap-rs/compare/imap-rs-tls-v0.2.0...imap-rs-tls-v0.2.1) - 2026-05-23
+
+### Fixed
+
+- clean up changelogs ([#12](https://github.com/YpNo/imap-rs/pull/12))
+
+### Other
+
+- release v0.2.0 ([#10](https://github.com/YpNo/imap-rs/pull/10))
+
 ## [0.2.0] - 2026-05-23
 
 Initial release published to crates.io. `imap-rs-tls` is the secure transport

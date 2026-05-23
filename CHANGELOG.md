@@ -12,6 +12,16 @@ its own changelog: [`imap-rs-core`](imap-core/CHANGELOG.md),
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/YpNo/imap-rs/compare/imap-rs-v0.2.0...imap-rs-v0.2.1) - 2026-05-23
+
+### Fixed
+
+- clean up changelogs ([#12](https://github.com/YpNo/imap-rs/pull/12))
+
+### Other
+
+- release v0.2.0 ([#10](https://github.com/YpNo/imap-rs/pull/10))
+
 ## [0.2.0] - 2026-05-23
 
 Initial release published to crates.io.

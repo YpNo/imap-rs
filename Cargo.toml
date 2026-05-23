@@ -21,9 +21,9 @@ include = [
 ]
 
 [dependencies]
-imap-core = { package = "imap-rs-core", path = "imap-core", version = "0.2.0" }
-imap-client = { package = "imap-rs-client", path = "imap-client", version = "0.2.0" }
-imap-tls = { package = "imap-rs-tls", path = "imap-tls", version = "0.2.0" }
+imap-core = { package = "imap-rs-core", path = "imap-core", version = "0.2.1" }
+imap-client = { package = "imap-rs-client", path = "imap-client", version = "0.2.1" }
+imap-tls = { package = "imap-rs-tls", path = "imap-tls", version = "0.2.1" }
 
 [package.metadata.docs.rs]
 all-features = true
@@ -38,7 +38,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.95.0"
 authors = ["YpNo"]
