@@ -1,13 +1,25 @@
+//! IMAP message flags and `STORE` actions.
+
 use std::fmt;
 
+/// An IMAP message flag. The system flags render with their leading `\`;
+/// [`Flag::Custom`] renders verbatim. Use the [`Display`](fmt::Display) impl
+/// to produce wire form.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Flag {
+    /// `\Seen` — the message has been read.
     Seen,
+    /// `\Answered` — the message has been answered.
     Answered,
+    /// `\Flagged` — the message is flagged for urgent/special attention.
     Flagged,
+    /// `\Deleted` — the message is marked for deletion (removed on `EXPUNGE`).
     Deleted,
+    /// `\Draft` — the message is a draft.
     Draft,
+    /// `\Recent` — the message arrived recently (session-scoped, IMAP4rev1).
     Recent,
+    /// A server- or client-defined keyword, rendered as-is.
     Custom(String),
 }
 
@@ -25,14 +37,21 @@ impl fmt::Display for Flag {
     }
 }
 
+/// How a `STORE` / `UID STORE` command should modify a message's flags.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreAction {
+    /// Add the given flags to the existing set (`+FLAGS`).
     Add,
+    /// Remove the given flags from the existing set (`-FLAGS`).
     Remove,
+    /// Replace the existing set with the given flags (`FLAGS`).
     Set,
 }
 
 impl StoreAction {
+    /// Return the IMAP item name for this action, e.g. `+FLAGS` or, when
+    /// `silent` is `true`, the `.SILENT` form that suppresses the untagged
+    /// `FETCH` response.
     pub fn to_imap_prefix(&self, silent: bool) -> &str {
         match self {
             StoreAction::Add => {

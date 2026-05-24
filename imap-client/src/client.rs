@@ -65,10 +65,13 @@ pub struct RawClient {
     write_tx: mpsc::Sender<WriteRequest>,
     event_tx: broadcast::Sender<Vec<u8>>,
     tag_counter: u64,
+    /// Default per-command deadline applied by [`RawClient::execute_command`].
     pub default_timeout: Duration,
 }
 
 impl RawClient {
+    /// Wrap an async stream, spawning the background read and write loops.
+    /// The stream is split internally; commands are pipelined by tag.
     pub fn new<S>(stream: S) -> Self
     where
         S: AsyncRead + AsyncWrite + Send + 'static,
@@ -99,6 +102,9 @@ impl RawClient {
         }
     }
 
+    /// Subscribe to untagged server frames (data, status, and continuation
+    /// responses). Each subscriber gets its own receiver; slow consumers may
+    /// observe `Lagged` once they fall behind the channel capacity.
     pub fn events(&self) -> broadcast::Receiver<Vec<u8>> {
         self.event_tx.subscribe()
     }
@@ -121,6 +127,8 @@ impl RawClient {
             .await
     }
 
+    /// Like [`execute_command`](Self::execute_command) but with an explicit
+    /// timeout instead of [`default_timeout`](Self::default_timeout).
     pub async fn execute_command_with_timeout(
         &mut self,
         cmd: &str,
@@ -183,6 +191,7 @@ pub struct WriterHandle {
 }
 
 impl WriterHandle {
+    /// Send raw bytes on the connection's write half (e.g. an IDLE `DONE`).
     pub async fn send_raw(&self, bytes: Vec<u8>) -> Result<(), ClientError> {
         self.write_tx
             .send(WriteRequest::Raw { bytes })

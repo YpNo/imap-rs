@@ -1,29 +1,53 @@
-/// Represents a search criterion in an IMAP SEARCH command.
+//! Builders for IMAP `SEARCH` / `UID SEARCH` criteria.
+
+/// A single search criterion in an IMAP `SEARCH` command.
 #[derive(Debug, Clone)]
 pub enum SearchKey {
+    /// `FROM` — messages whose `From` header contains the substring.
     From(String),
+    /// `TO` — messages whose `To` header contains the substring.
     To(String),
+    /// `SUBJECT` — messages whose `Subject` header contains the substring.
     Subject(String),
+    /// `BODY` — messages whose body contains the substring.
     Body(String),
+    /// `TEXT` — messages whose header or body contains the substring.
     Text(String),
+    /// `ALL` — every message in the mailbox.
     All,
+    /// `ANSWERED` — messages with the `\Answered` flag.
     Answered,
+    /// `DELETED` — messages with the `\Deleted` flag.
     Deleted,
+    /// `DRAFT` — messages with the `\Draft` flag.
     Draft,
+    /// `FLAGGED` — messages with the `\Flagged` flag.
     Flagged,
+    /// `RECENT` — messages with the `\Recent` flag.
     Recent,
+    /// `SEEN` — messages with the `\Seen` flag.
     Seen,
+    /// `UNANSWERED` — messages without the `\Answered` flag.
     Unanswered,
+    /// `UNDELETED` — messages without the `\Deleted` flag.
     Undeleted,
+    /// `UNDRAFT` — messages without the `\Draft` flag.
     Undraft,
+    /// `UNFLAGGED` — messages without the `\Flagged` flag.
     Unflagged,
+    /// `UNSEEN` — messages without the `\Seen` flag.
     Unseen,
+    /// Conjunction — all of the contained keys must match (space-joined).
     And(Vec<SearchKey>),
+    /// `OR` — either of the two keys must match.
     Or(Box<SearchKey>, Box<SearchKey>),
+    /// `NOT` — the contained key must not match.
     Not(Box<SearchKey>),
 }
 
 impl SearchKey {
+    /// Render this criterion as an IMAP search-key string suitable for a
+    /// `SEARCH` command.
     pub fn to_imap_string(&self) -> String {
         match self {
             SearchKey::From(s) => format!("FROM \"{}\"", s),
@@ -58,27 +82,35 @@ impl SearchKey {
     }
 }
 
+/// A convenience builder that wraps a single [`SearchKey`] and renders it to
+/// the IMAP search-key string.
 pub struct SearchQuery {
     key: SearchKey,
 }
 
 impl SearchQuery {
+    /// Build a query from an arbitrary [`SearchKey`] (including compound
+    /// `And` / `Or` / `Not` trees).
     pub fn new(key: SearchKey) -> Self {
         Self { key }
     }
 
+    /// Shorthand for a `FROM` search.
     pub fn from(addr: &str) -> Self {
         Self::new(SearchKey::From(addr.to_string()))
     }
 
+    /// Shorthand for a `TO` search.
     pub fn to(addr: &str) -> Self {
         Self::new(SearchKey::To(addr.to_string()))
     }
 
+    /// Shorthand for a `SUBJECT` search.
     pub fn subject(text: &str) -> Self {
         Self::new(SearchKey::Subject(text.to_string()))
     }
 
+    /// Consume the builder and render the IMAP search-key string.
     pub fn build(self) -> String {
         self.key.to_imap_string()
     }

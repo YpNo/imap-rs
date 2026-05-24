@@ -1,3 +1,20 @@
+//! Async, type-state IMAP client for the
+//! [`imap-rs`](https://crates.io/crates/imap-rs) library.
+//!
+//! This crate owns the session state machine and the command dispatcher. It is
+//! transport-agnostic: drive it with any `AsyncRead + AsyncWrite` stream (see
+//! [`imap-rs-tls`](https://crates.io/crates/imap-rs-tls) for a ready-made
+//! `rustls` transport).
+//!
+//! # Highlights
+//!
+//! - [`Session`] is type-stated over protocol phase ([`Unauthenticated`],
+//!   [`Authenticated`], [`Selected`]) and transport ([`PlainText`], [`Tls`]),
+//!   so invalid command sequences fail to compile.
+//! - [`RawClient`] is the lower-level pipelining dispatcher: it routes tagged
+//!   responses back to callers and broadcasts untagged events.
+//! - Credentials ([`credentials::Password`], [`credentials::OAuthToken`]) are
+//!   zeroized on drop and redacted in `Debug`.
 #![forbid(unsafe_code)]
 
 pub mod capabilities;

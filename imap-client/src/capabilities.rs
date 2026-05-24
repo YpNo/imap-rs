@@ -9,24 +9,45 @@
 use imap_core::ast::{DataResponse, Response, ResponseCode};
 use imap_core::parser::parse_response;
 
+/// Parsed view of a server's advertised IMAP capabilities.
+///
+/// Each field is `true` when the corresponding capability atom was present
+/// in the server's `CAPABILITY` list. Unknown atoms are ignored.
 #[derive(Debug, Clone, Default)]
 pub struct Capabilities {
+    /// `IMAP4rev1` (RFC 3501) base protocol.
     pub imap4rev1: bool,
+    /// `IMAP4rev2` (RFC 9051) base protocol.
     pub imap4rev2: bool,
+    /// `STARTTLS` — cleartext-to-TLS upgrade is supported.
     pub starttls: bool,
+    /// `LOGINDISABLED` — the `LOGIN` command is refused (typically pre-TLS).
     pub login_disabled: bool,
+    /// `IDLE` (RFC 2177) — server-pushed mailbox updates.
     pub idle: bool,
+    /// `UNSELECT` (RFC 3691) — leave the selected mailbox without expunging.
     pub unselect: bool,
+    /// `CONDSTORE` (RFC 7162) — conditional store / mod-sequences.
     pub condstore: bool,
+    /// `QRESYNC` (RFC 7162) — quick mailbox resynchronization.
     pub qresync: bool,
+    /// `MOVE` (RFC 6851) — atomic message move.
     pub move_ext: bool,
+    /// `UIDPLUS` (RFC 4315) — `UID EXPUNGE` and assigned-UID responses.
     pub uidplus: bool,
+    /// `LITERAL+` (RFC 7888) — non-synchronizing literals.
     pub literal_plus: bool,
+    /// `LITERAL-` (RFC 7888) — non-synchronizing literals capped at 4096 octets.
     pub literal_minus: bool,
+    /// `ENABLE` (RFC 5161) — opt into extensions for the session.
     pub enable: bool,
+    /// `AUTH=PLAIN` SASL mechanism.
     pub auth_plain: bool,
+    /// `AUTH=LOGIN` SASL mechanism.
     pub auth_login: bool,
+    /// `AUTH=XOAUTH2` SASL mechanism.
     pub auth_xoauth2: bool,
+    /// `AUTH=OAUTHBEARER` (RFC 7628) SASL mechanism.
     pub auth_oauthbearer: bool,
 }
 
