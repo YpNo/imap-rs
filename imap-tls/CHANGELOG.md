@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3](https://github.com/YpNo/imap-rs/compare/imap-rs-tls-v0.2.2...imap-rs-tls-v0.2.3) - 2026-05-24
+
+### Other
+
+- release v0.2.2 ([#15](https://github.com/YpNo/imap-rs/pull/15))
+
 ## [0.2.2](https://github.com/YpNo/imap-rs/compare/imap-rs-tls-v0.2.1...imap-rs-tls-v0.2.2) - 2026-05-24
 
 ### Other
