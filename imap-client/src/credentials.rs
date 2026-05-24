@@ -1,3 +1,9 @@
+//! Secret credential wrappers.
+//!
+//! [`Password`] and [`OAuthToken`] are zeroized on drop and redact their
+//! contents in `Debug` output, so secrets are never wiped late or leaked
+//! through logging.
+
 use std::fmt;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -8,10 +14,14 @@ use crate::error::ClientError;
 pub struct Password(String);
 
 impl Password {
+    /// Wrap a plaintext password. The value is zeroized when the
+    /// [`Password`] is dropped.
     pub fn new<S: Into<String>>(pass: S) -> Self {
         Self(pass.into())
     }
 
+    /// Borrow the password as a string slice. Use sparingly — the returned
+    /// reference is not zeroized.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -40,10 +50,13 @@ impl fmt::Debug for Password {
 pub struct OAuthToken(String);
 
 impl OAuthToken {
+    /// Wrap an OAuth bearer token. The value is zeroized on drop.
     pub fn new<S: Into<String>>(token: S) -> Self {
         Self(token.into())
     }
 
+    /// Borrow the token as a string slice. Use sparingly — the returned
+    /// reference is not zeroized.
     pub fn as_str(&self) -> &str {
         &self.0
     }

@@ -18,6 +18,8 @@ pub use imap_tls as tls;
 pub use imap_client::Session;
 pub use imap_tls::{connect_starttls, connect_tls};
 
+/// Secret credential wrappers (`Password` and `OAuthToken`) re-exported from
+/// `imap_client::credentials`.
 pub mod credentials {
     pub use imap_client::credentials::{OAuthToken, Password};
 }

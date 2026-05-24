@@ -37,27 +37,43 @@ use imap_core::parser::parse_response;
 
 // --- State markers -----------------------------------------------------
 
+/// Type-state marker: the session has not yet authenticated.
 pub struct Unauthenticated;
+/// Type-state marker: the session is authenticated but no mailbox is selected.
 pub struct Authenticated;
+/// Type-state marker: a mailbox is selected and message commands are available.
 pub struct Selected;
 
 // --- Transport markers -------------------------------------------------
 
+/// Transport marker: the connection is cleartext (pre-TLS).
 pub struct PlainText;
+/// Transport marker: the connection is encrypted with TLS.
 pub struct Tls;
 
 /// Generic session enforcing compile-time state transitions.
+///
+/// `State` is one of [`Unauthenticated`], [`Authenticated`], or [`Selected`];
+/// `Transport` is [`PlainText`] or [`Tls`]. The type parameters gate which
+/// commands are callable — e.g. `LOGIN` only exists on
+/// `Session<Unauthenticated, Tls>`.
 pub struct Session<State, Transport> {
     raw: RawClient,
+    /// Server capabilities known for this session, refreshed after STARTTLS
+    /// and after authentication.
     pub capabilities: Capabilities,
     _state: PhantomData<State>,
     _transport: PhantomData<Transport>,
 }
 
+/// The decoded result of a `FETCH` for a single message.
 #[derive(Debug, Clone)]
 pub struct FetchResult {
+    /// The message sequence number.
     pub seq: u32,
+    /// The message UID, if it was included in the fetch.
     pub uid: Option<u32>,
+    /// The fetched body bytes (e.g. from `BODY[]`), if requested and present.
     pub body: Option<Vec<u8>>,
 }
 
@@ -73,6 +89,8 @@ impl<S, T> Session<S, T> {
         }
     }
 
+    /// Re-tag the session's transport type parameter (e.g. `PlainText` → `Tls`
+    /// after a STARTTLS upgrade). Performs no I/O.
     pub fn transition_transport<NewTransport>(self) -> Session<S, NewTransport> {
         Session {
             raw: self.raw,
@@ -82,6 +100,8 @@ impl<S, T> Session<S, T> {
         }
     }
 
+    /// Subscribe to untagged server frames for this session
+    /// (see [`RawClient::events`](crate::client::RawClient::events)).
     pub fn events(&self) -> broadcast::Receiver<Vec<u8>> {
         self.raw.events()
     }
@@ -116,6 +136,8 @@ impl<S, T> Session<S, T> {
 }
 
 impl<T> Session<Unauthenticated, T> {
+    /// Wrap a connected [`RawClient`] as a fresh, unauthenticated session with
+    /// the given initial capabilities.
     pub fn new(raw: RawClient, capabilities: Capabilities) -> Self {
         Self::new_in_state(raw, capabilities)
     }
@@ -307,10 +329,12 @@ impl<T> Session<Selected, T> {
         Ok(None)
     }
 
+    /// `SEARCH` — return the message **sequence numbers** matching `query`.
     pub async fn search(&mut self, query: SearchQuery) -> Result<Vec<u32>, ClientError> {
         self.run_search(&format!("SEARCH {}", query.build())).await
     }
 
+    /// `UID SEARCH` — return the message **UIDs** matching `query`.
     pub async fn uid_search(&mut self, query: SearchQuery) -> Result<Vec<u32>, ClientError> {
         self.run_search(&format!("UID SEARCH {}", query.build()))
             .await
@@ -329,6 +353,8 @@ impl<T> Session<Selected, T> {
         Ok(all_ids)
     }
 
+    /// `STORE` — apply a flag `action` (add / remove / set) to the messages in
+    /// `sequence_set` (a sequence-number set such as `"1:5"` or `"1,3,5"`).
     pub async fn store(
         &mut self,
         sequence_set: &str,
@@ -349,6 +375,7 @@ impl<T> Session<Selected, T> {
         self.raw.execute_command(&cmd).await
     }
 
+    /// `UID STORE` — like [`store`](Self::store) but addressed by UID set.
     pub async fn uid_store(
         &mut self,
         uid_set: &str,
@@ -369,6 +396,8 @@ impl<T> Session<Selected, T> {
         self.raw.execute_command(&cmd).await
     }
 
+    /// `EXPUNGE` — permanently remove messages flagged `\Deleted` from the
+    /// selected mailbox.
     pub async fn expunge(&mut self) -> Result<Vec<u8>, ClientError> {
         self.raw.execute_command("EXPUNGE").await
     }
