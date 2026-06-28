@@ -12,6 +12,12 @@ its own changelog: [`imap-rs-core`](imap-core/CHANGELOG.md),
 
 ## [Unreleased]
 
+## [0.2.3](https://github.com/YpNo/imap-rs/compare/imap-rs-v0.2.2...imap-rs-v0.2.3) - 2026-06-03
+
+### Other
+
+- release v0.2.3 ([#16](https://github.com/YpNo/imap-rs/pull/16))
+
 ## [0.2.2](https://github.com/YpNo/imap-rs/compare/imap-rs-v0.2.1...imap-rs-v0.2.2) - 2026-05-24
 
 ### Fixed
