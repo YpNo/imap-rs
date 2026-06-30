@@ -1521,4 +1521,432 @@ mod tests {
         let (rem, _) = parse_response(input).unwrap();
         assert_eq!(rem, b"* OK second\r\n");
     }
+
+    // --- Keyword boundary handling ----------------------------------
+
+    #[test]
+    fn test_parse_keyword_prefix_not_status() {
+        // "OKAY" must NOT be treated as the "OK" status keyword; it falls
+        // through to a named data response captured verbatim.
+        let r = ok(b"* OKAY all good\r\n");
+        if let Response::Data(DataResponse::Other(line)) = r {
+            assert_eq!(line, b"OKAY all good");
+        } else {
+            panic!("expected Other data, got {r:?}");
+        }
+    }
+
+    // --- CRLF framing errors ----------------------------------------
+
+    #[test]
+    fn test_parse_lf_without_cr_is_malformed() {
+        // Bare LF (no preceding CR) trips the "expected CR" guard.
+        let res = parse_response(b"* OK text\n");
+        assert!(matches!(res, Err(ParseError::Malformed("expected CR"))));
+    }
+
+    // --- Number parsing edge cases ----------------------------------
+
+    #[test]
+    fn test_parse_number_incomplete_at_eof() {
+        let res = parse_response(b"* OK [UIDNEXT ");
+        assert!(matches!(res, Err(ParseError::Incomplete)));
+    }
+
+    #[test]
+    fn test_parse_number_invalid_non_digit() {
+        let res = parse_response(b"* OK [UIDNEXT x]\r\n");
+        assert!(matches!(res, Err(ParseError::InvalidNumber)));
+    }
+
+    // --- Atom parsing edge cases ------------------------------------
+
+    #[test]
+    fn test_parse_atom_incomplete_at_eof() {
+        // Numeric data response truncated right after the SP.
+        let res = parse_response(b"* 5 ");
+        assert!(matches!(res, Err(ParseError::Incomplete)));
+    }
+
+    #[test]
+    fn test_parse_atom_malformed_non_atom_char() {
+        let res = parse_response(b"* 5 (\r\n");
+        assert!(matches!(res, Err(ParseError::Malformed("expected atom"))));
+    }
+
+    // --- Tag parsing edge cases -------------------------------------
+
+    #[test]
+    fn test_parse_tag_malformed_empty() {
+        // First byte is CR: not '+'/'*' so dispatched as tagged, but the tag
+        // is empty.
+        let res = parse_response(b"\r\n");
+        assert!(matches!(res, Err(ParseError::Malformed("expected tag"))));
+    }
+
+    // --- Quoted string escapes & control chars ----------------------
+
+    #[test]
+    fn test_parse_quoted_with_escape_sequence() {
+        // Escaped quote inside the quoted string is passed through raw.
+        let r = ok(b"* 1 FETCH (INTERNALDATE \"a\\\"b\")\r\n");
+        if let Response::Data(DataResponse::Fetch { attributes, .. }) = r {
+            assert_eq!(attributes, vec![FetchAttribute::InternalDate("a\\\"b")]);
+        } else {
+            panic!("expected fetch, got {r:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_quoted_with_cr_is_malformed() {
+        let res = parse_response(b"* 1 FETCH (INTERNALDATE \"a\rb\")\r\n");
+        assert!(matches!(
+            res,
+            Err(ParseError::Malformed("CR/LF inside quoted string"))
+        ));
+    }
+
+    // --- astring / nstring forms ------------------------------------
+
+    #[test]
+    fn test_parse_status_mailbox_as_atom() {
+        // Unquoted (atom) mailbox name exercises the astring atom path.
+        let r = ok(b"* STATUS INBOX (MESSAGES 1)\r\n");
+        if let Response::Data(DataResponse::Status { mailbox, .. }) = r {
+            assert_eq!(mailbox, "INBOX");
+        } else {
+            panic!("expected status, got {r:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_status_mailbox_as_literal() {
+        let r = ok(b"* STATUS {5}\r\nINBOX (MESSAGES 1)\r\n");
+        if let Response::Data(DataResponse::Status { mailbox, .. }) = r {
+            assert_eq!(mailbox, "INBOX");
+        } else {
+            panic!("expected status, got {r:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_list_delimiter_as_literal() {
+        let r = ok(b"* LIST () {1}\r\n. \"INBOX\"\r\n");
+        if let Response::Data(DataResponse::List {
+            delimiter, name, ..
+        }) = r
+        {
+            assert_eq!(delimiter, Some("."));
+            assert_eq!(name, "INBOX");
+        } else {
+            panic!("expected list, got {r:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_list_delimiter_malformed() {
+        let res = parse_response(b"* LIST () X \"INBOX\"\r\n");
+        assert!(matches!(
+            res,
+            Err(ParseError::Malformed("expected nstring"))
+        ));
+    }
+
+    // --- Paren atom list edge cases ---------------------------------
+
+    #[test]
+    fn test_parse_flag_list_malformed_no_separator() {
+        // No SP between flags after the first one is consumed.
+        let res = parse_response(b"* FLAGS (\\Seen\\Draft)\r\n");
+        assert!(matches!(
+            res,
+            Err(ParseError::Malformed("expected SP or ) in list"))
+        ));
+    }
+
+    #[test]
+    fn test_parse_flag_list_empty_item_malformed() {
+        let res = parse_response(b"* FLAGS (()\r\n");
+        assert!(matches!(
+            res,
+            Err(ParseError::Malformed("expected flag/atom"))
+        ));
+    }
+
+    // --- Balanced parens: nesting & literals ------------------------
+
+    #[test]
+    fn test_parse_envelope_with_nested_parens_and_literal() {
+        let r = ok(b"* 1 FETCH (ENVELOPE ((\"a\") {2}\r\nbc))\r\n");
+        if let Response::Data(DataResponse::Fetch { attributes, .. }) = r {
+            if let FetchAttribute::Envelope(bytes) = &attributes[0] {
+                assert_eq!(*bytes, b"((\"a\") {2}\r\nbc)".as_ref());
+            } else {
+                panic!("expected envelope, got {attributes:?}");
+            }
+        } else {
+            panic!("expected fetch, got {r:?}");
+        }
+    }
+
+    // --- Tagged status keyword disambiguation -----------------------
+
+    #[test]
+    fn test_parse_tagged_partial_keyword_incomplete() {
+        let res = parse_response(b"A1 O");
+        assert!(matches!(res, Err(ParseError::Incomplete)));
+    }
+
+    #[test]
+    fn test_parse_tagged_unknown_keyword_malformed() {
+        let res = parse_response(b"A1 ZZ done\r\n");
+        assert!(matches!(
+            res,
+            Err(ParseError::Malformed("expected tagged status keyword"))
+        ));
+    }
+
+    // --- Response code edge cases -----------------------------------
+
+    #[test]
+    fn test_parse_resp_code_empty_malformed() {
+        let res = parse_response(b"* OK [] text\r\n");
+        assert!(matches!(
+            res,
+            Err(ParseError::Malformed("empty response code"))
+        ));
+    }
+
+    #[test]
+    fn test_parse_resp_code_badcharset_with_list() {
+        let r = ok(b"* NO [BADCHARSET (UTF-8 KOI8-R)] bad charset\r\n");
+        if let Response::Status(s) = r {
+            assert_eq!(
+                s.code,
+                Some(ResponseCode::BadCharset(vec!["UTF-8", "KOI8-R"]))
+            );
+        } else {
+            panic!("expected status, got {r:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_resp_code_badcharset_without_list() {
+        let r = ok(b"* NO [BADCHARSET] bad charset\r\n");
+        if let Response::Status(s) = r {
+            assert_eq!(s.code, Some(ResponseCode::BadCharset(vec![])));
+        } else {
+            panic!("expected status, got {r:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_resp_code_other_without_extra() {
+        let r = ok(b"* NO [NONEXISTENT] gone\r\n");
+        if let Response::Status(s) = r {
+            assert_eq!(s.code, Some(ResponseCode::Other("NONEXISTENT", None)));
+        } else {
+            panic!("expected status, got {r:?}");
+        }
+    }
+
+    // --- Unknown numeric data salvage -------------------------------
+
+    #[test]
+    fn test_parse_unknown_numeric_data_falls_back_to_other() {
+        let r = ok(b"* 5 WIBBLE foo bar\r\n");
+        if let Response::Data(DataResponse::Other(line)) = r {
+            assert_eq!(line, b"* 5 WIBBLE foo bar");
+        } else {
+            panic!("expected Other data, got {r:?}");
+        }
+    }
+
+    // --- STATUS items -----------------------------------------------
+
+    #[test]
+    fn test_parse_status_empty_items() {
+        let r = ok(b"* STATUS \"INBOX\" ()\r\n");
+        if let Response::Data(DataResponse::Status { items, .. }) = r {
+            assert!(items.is_empty());
+        } else {
+            panic!("expected status, got {r:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_status_items_uid_and_other() {
+        let r = ok(b"* STATUS \"X\" (UIDNEXT 5 UIDVALIDITY 9 HIGHESTMODSEQ 100)\r\n");
+        if let Response::Data(DataResponse::Status { items, .. }) = r {
+            assert_eq!(
+                items,
+                vec![
+                    StatusItem::UidNext(5),
+                    StatusItem::UidValidity(9),
+                    StatusItem::Other(100),
+                ]
+            );
+        } else {
+            panic!("expected status, got {r:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_status_items_malformed_separator() {
+        let res = parse_response(b"* STATUS \"X\" (MESSAGES 1Z)\r\n");
+        assert!(matches!(
+            res,
+            Err(ParseError::Malformed("expected SP or ) in STATUS items"))
+        ));
+    }
+
+    #[test]
+    fn test_parse_status_items_missing_open_paren() {
+        // consume_byte('(') fails with InvalidChar.
+        let res = parse_response(b"* STATUS \"X\" MESSAGES 1\r\n");
+        assert!(matches!(res, Err(ParseError::InvalidChar(_))));
+    }
+
+    // --- FETCH attribute list edge cases ----------------------------
+
+    #[test]
+    fn test_parse_fetch_empty_attrs() {
+        let r = ok(b"* 1 FETCH ()\r\n");
+        if let Response::Data(DataResponse::Fetch { attributes, .. }) = r {
+            assert!(attributes.is_empty());
+        } else {
+            panic!("expected fetch, got {r:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_fetch_attrs_malformed_separator() {
+        let res = parse_response(b"* 1 FETCH (UID 5Z)\r\n");
+        assert!(matches!(
+            res,
+            Err(ParseError::Malformed("expected SP or ) in FETCH atts"))
+        ));
+    }
+
+    #[test]
+    fn test_parse_fetch_unknown_attribute_malformed() {
+        let res = parse_response(b"* 1 FETCH (FOOBAR 1)\r\n");
+        assert!(matches!(
+            res,
+            Err(ParseError::Malformed("unknown FETCH attribute"))
+        ));
+    }
+
+    #[test]
+    fn test_parse_fetch_empty_att_name_malformed() {
+        let res = parse_response(b"* 1 FETCH ( )\r\n");
+        assert!(matches!(
+            res,
+            Err(ParseError::Malformed("expected FETCH att name"))
+        ));
+    }
+
+    // --- RFC822 family ----------------------------------------------
+
+    #[test]
+    fn test_parse_fetch_rfc822_literal() {
+        let r = ok(b"* 1 FETCH (RFC822 {3}\r\nabc)\r\n");
+        if let Response::Data(DataResponse::Fetch { attributes, .. }) = r {
+            assert_eq!(attributes, vec![FetchAttribute::Rfc822(b"abc")]);
+        } else {
+            panic!("expected fetch, got {r:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_fetch_rfc822_header_and_text() {
+        let r = ok(b"* 1 FETCH (RFC822.HEADER {2}\r\nhi RFC822.TEXT {2}\r\nyo)\r\n");
+        if let Response::Data(DataResponse::Fetch { attributes, .. }) = r {
+            assert_eq!(
+                attributes,
+                vec![
+                    FetchAttribute::Rfc822Header(b"hi"),
+                    FetchAttribute::Rfc822Text(b"yo"),
+                ]
+            );
+        } else {
+            panic!("expected fetch, got {r:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_fetch_rfc822_quoted() {
+        let r = ok(b"* 1 FETCH (RFC822 \"hi\")\r\n");
+        if let Response::Data(DataResponse::Fetch { attributes, .. }) = r {
+            assert_eq!(attributes, vec![FetchAttribute::Rfc822(b"hi")]);
+        } else {
+            panic!("expected fetch, got {r:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_fetch_rfc822_nil() {
+        let r = ok(b"* 1 FETCH (RFC822 NIL)\r\n");
+        if let Response::Data(DataResponse::Fetch { attributes, .. }) = r {
+            assert_eq!(attributes, vec![FetchAttribute::Rfc822(b"")]);
+        } else {
+            panic!("expected fetch, got {r:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_fetch_rfc822_malformed() {
+        let res = parse_response(b"* 1 FETCH (RFC822 Z)\r\n");
+        assert!(matches!(
+            res,
+            Err(ParseError::Malformed("expected nstring"))
+        ));
+    }
+
+    // --- BODY structure (no section) --------------------------------
+
+    #[test]
+    fn test_parse_fetch_body_no_section() {
+        let r = ok(b"* 1 FETCH (BODY (\"text\" \"plain\" NIL))\r\n");
+        if let Response::Data(DataResponse::Fetch { attributes, .. }) = r {
+            assert!(matches!(attributes[0], FetchAttribute::Body(_)));
+        } else {
+            panic!("expected fetch, got {r:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_fetch_body_section_quoted_data() {
+        let r = ok(b"* 1 FETCH (BODY[] \"hi\")\r\n");
+        if let Response::Data(DataResponse::Fetch { attributes, .. }) = r {
+            assert_eq!(
+                attributes,
+                vec![FetchAttribute::BodySection {
+                    section: None,
+                    origin: None,
+                    data: Some(b"hi".as_ref()),
+                }]
+            );
+        } else {
+            panic!("expected fetch, got {r:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_fetch_body_section_malformed_data() {
+        let res = parse_response(b"* 1 FETCH (BODY[] Z)\r\n");
+        assert!(matches!(
+            res,
+            Err(ParseError::Malformed("expected nstring"))
+        ));
+    }
+
+    #[test]
+    fn test_parse_fetch_body_section_crlf_in_section() {
+        let res = parse_response(b"* 1 FETCH (BODY[HE\r\n");
+        assert!(matches!(
+            res,
+            Err(ParseError::Malformed("CR/LF before terminator"))
+        ));
+    }
 }
