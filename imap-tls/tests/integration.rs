@@ -32,7 +32,7 @@ struct TestPki {
 fn build_test_pki() -> TestPki {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
     let cert_der = CertificateDer::from(cert.cert.der().to_vec());
-    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()));
+    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()));
     let mut roots = RootCertStore::empty();
     roots.add(cert_der.clone()).unwrap();
     TestPki {

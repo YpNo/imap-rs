@@ -35,7 +35,7 @@ tracing.workspace = true
 bytes.workspace = true
 tokio-rustls = "0.26"
 webpki-roots = "1.0"
-rustls-pki-types = "1.14"
+rustls-pki-types = "1.15"
 
 [dev-dependencies]
-rcgen = "0.13"
+rcgen = "0.14"
