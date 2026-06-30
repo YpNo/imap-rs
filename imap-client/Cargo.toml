@@ -43,7 +43,7 @@ move_ext = []
 # without an implementation misleads callers about what's supported.
 
 [dev-dependencies]
-trybuild = "1.0.116"
+trybuild = "1.0.117"
 
 [package.metadata.docs.rs]
 all-features = true
