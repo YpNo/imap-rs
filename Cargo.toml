@@ -50,9 +50,9 @@ categories = ["email", "network-programming"]
 publish = true
 
 [workspace.dependencies]
-thiserror = "2.0"
-tracing = "0.1"
+thiserror = "2.0.20"
+tracing = "0.1.44"
 tokio = { version = "1", features = ["full"] }
 zeroize = { version = "1.9", features = ["zeroize_derive"] }
 rustls = { version = "0.23", features = ["ring"] }
-bytes = "1.12"
+bytes = "1.12.1"
