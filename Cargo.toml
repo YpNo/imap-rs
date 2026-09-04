@@ -52,7 +52,7 @@ publish = true
 [workspace.dependencies]
 thiserror = "2.0"
 tracing = "0.1"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1.53.1", features = ["full"] }
 zeroize = { version = "1.9", features = ["zeroize_derive"] }
-rustls = { version = "0.23", features = ["ring"] }
+rustls = { version = "0.23.43", features = ["ring"] }
 bytes = "1.12"
