@@ -38,4 +38,4 @@ webpki-roots = "1.0"
 rustls-pki-types = "1.15"
 
 [dev-dependencies]
-rcgen = "0.14"
+rcgen = "0.14.10"
