@@ -7,7 +7,7 @@
 - **Domain**: Email Protocol (IMAP4rev1/rev2)
 - **Primary adapters (inbound)**: Library API (`Session<State, Transport>`)
 - **Driven adapters (outbound)**: TCP Sockets, `rustls` (via `tokio-rustls`)
-- **MSRV**: 1.95.0 (pinned for consistent `trybuild` diagnostics)
+- **MSRV**: 1.95.0 (`rust-version` in `Cargo.toml`), the supported minimum, checked by the `msrv` CI job. Day-to-day builds and the `trybuild` UI diagnostics are pinned by `rust-toolchain.toml` (currently 1.99.1).
 - **Async runtime**: tokio
 
 ---
