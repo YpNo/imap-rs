@@ -4,5 +4,4 @@ error[E0599]: no method named `fetch` found for struct `Session<Unauthenticated,
 9 |     let _ = session.fetch("1", "ALL").await;
   |                     ^^^^^ method not found in `Session<Unauthenticated, Tls>`
   |
-  = note: the method was found for
-          - `Session<Selected, T>`
+  = note: the method was found for `Session<Selected, T>`
