@@ -108,16 +108,7 @@ pub(crate) fn imap_quoted(s: &str) -> Result<String, ClientError> {
                 .to_string(),
         ));
     }
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        if c == '"' || c == '\\' {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out.push('"');
-    Ok(out)
+    Ok(crate::wire::quote(s))
 }
 
 #[cfg(test)]

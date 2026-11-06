@@ -30,6 +30,7 @@ use crate::error::ClientError;
 use crate::flags::{Flag, StoreAction};
 use crate::idle::IdleHandle;
 use crate::search::SearchQuery;
+use crate::wire;
 
 use imap_core::ast::{DataResponse, FetchAttribute, Response};
 use imap_core::parser::parse_response;
@@ -273,24 +274,39 @@ impl<T> Session<Authenticated, T> {
 
 impl<T> Session<Selected, T> {
     /// `FETCH` returning the raw tagged-response bytes.
+    ///
+    /// Returns [`ClientError::InvalidArgument`] without sending anything if `sequence_set` is not a
+    /// valid sequence set (`1:5,7,9:*`) or `items` is not a valid FETCH item list (printable ASCII,
+    /// balanced `()` / `[]`, no `{`).
     pub async fn fetch_raw(
         &mut self,
         sequence_set: &str,
         items: &str,
     ) -> Result<Vec<u8>, ClientError> {
-        let cmd = format!("FETCH {} {}", sequence_set, items);
+        let cmd = format!(
+            "FETCH {} {}",
+            wire::sequence_set(sequence_set)?,
+            wire::fetch_items(items)?
+        );
         self.raw.execute_command(&cmd).await
     }
 
     /// `FETCH` returning structured [`FetchResult`] entries derived from
     /// the broadcast untagged FETCH frames.
+    ///
+    /// Returns [`ClientError::InvalidArgument`] without sending anything if `sequence_set` is not a
+    /// valid sequence set or `items` is not a valid FETCH item list.
     pub async fn fetch(
         &mut self,
         sequence_set: &str,
         items: &str,
     ) -> Result<Vec<FetchResult>, ClientError> {
+        let cmd = format!(
+            "FETCH {} {}",
+            wire::sequence_set(sequence_set)?,
+            wire::fetch_items(items)?
+        );
         let mut events = self.raw.events();
-        let cmd = format!("FETCH {} {}", sequence_set, items);
         let _resp = self.raw.execute_command(&cmd).await?;
 
         let mut results = Vec::new();
@@ -329,6 +345,9 @@ impl<T> Session<Selected, T> {
     }
 
     /// `SEARCH` — return the message **sequence numbers** matching `query`.
+    ///
+    /// Returns [`ClientError::InvalidArgument`] without sending anything if a text criterion in
+    /// `query` contains a CR, LF or NUL; quotes and backslashes are escaped.
     pub async fn search(&mut self, query: SearchQuery) -> Result<Vec<u32>, ClientError> {
         self.run_search(&format!("SEARCH {}", query.build())).await
     }
@@ -354,12 +373,19 @@ impl<T> Session<Selected, T> {
 
     /// `STORE` — apply a flag `action` (add / remove / set) to the messages in
     /// `sequence_set` (a sequence-number set such as `"1:5"` or `"1,3,5"`).
+    ///
+    /// Returns [`ClientError::InvalidArgument`] without sending anything if `sequence_set` is not a
+    /// valid sequence set, or a [`Flag::Custom`] is not an IMAP keyword (an atom, optionally
+    /// prefixed with one `\`).
     pub async fn store(
         &mut self,
         sequence_set: &str,
         action: StoreAction,
         flags: &[Flag],
     ) -> Result<Vec<u8>, ClientError> {
+        for flag in flags {
+            wire::flag(flag)?;
+        }
         let flags_str = flags
             .iter()
             .map(|f| f.to_string())
@@ -367,7 +393,7 @@ impl<T> Session<Selected, T> {
             .join(" ");
         let cmd = format!(
             "STORE {} {} ({})",
-            sequence_set,
+            wire::sequence_set(sequence_set)?,
             action.to_imap_prefix(false),
             flags_str
         );
@@ -375,12 +401,18 @@ impl<T> Session<Selected, T> {
     }
 
     /// `UID STORE` — like [`store`](Self::store) but addressed by UID set.
+    ///
+    /// Returns [`ClientError::InvalidArgument`] without sending anything if `uid_set` is not a
+    /// valid sequence set or a [`Flag::Custom`] is not an IMAP keyword.
     pub async fn uid_store(
         &mut self,
         uid_set: &str,
         action: StoreAction,
         flags: &[Flag],
     ) -> Result<Vec<u8>, ClientError> {
+        for flag in flags {
+            wire::flag(flag)?;
+        }
         let flags_str = flags
             .iter()
             .map(|f| f.to_string())
@@ -388,7 +420,7 @@ impl<T> Session<Selected, T> {
             .join(" ");
         let cmd = format!(
             "UID STORE {} {} ({})",
-            uid_set,
+            wire::sequence_set(uid_set)?,
             action.to_imap_prefix(false),
             flags_str
         );
@@ -438,6 +470,9 @@ impl<T> Session<Selected, T> {
     }
 
     /// `MOVE` (RFC 6851). Errors if the server has not advertised `MOVE`.
+    ///
+    /// Returns [`ClientError::InvalidArgument`] without sending anything if `sequence_set` is not a
+    /// valid sequence set.
     pub async fn move_messages(
         &mut self,
         sequence_set: &str,
@@ -446,7 +481,11 @@ impl<T> Session<Selected, T> {
         if !self.capabilities.move_ext {
             return Err(ClientError::UnsupportedCapability("MOVE"));
         }
-        let cmd = format!("MOVE {} {}", sequence_set, imap_quoted(mailbox)?);
+        let cmd = format!(
+            "MOVE {} {}",
+            wire::sequence_set(sequence_set)?,
+            imap_quoted(mailbox)?
+        );
         self.raw.execute_command(&cmd).await
     }
 }
@@ -527,6 +566,99 @@ mod tests {
     ) -> Session<Selected, Tls> {
         let raw = RawClient::new(client_io);
         Session::<Selected, Tls>::new_in_state(raw, caps)
+    }
+
+    /// Assert that the client wrote nothing to the server.
+    async fn assert_nothing_sent(server: &mut tokio::io::DuplexStream) {
+        let mut buf = [0u8; 64];
+        let read = tokio::time::timeout(Duration::from_millis(50), server.read(&mut buf)).await;
+        assert!(read.is_err(), "client wrote {:?}", read);
+    }
+
+    #[tokio::test]
+    async fn fetch_raw_with_crlf_in_sequence_set_is_rejected_before_send() {
+        let (client_io, mut server_io) = duplex(1024);
+        let mut session = selected_session(client_io);
+        let result = session
+            .fetch_raw("1\r\nX1 STORE 1:* +FLAGS (\\Deleted)\r\nX2 EXPUNGE", "ALL")
+            .await;
+        assert!(
+            matches!(result, Err(ClientError::InvalidArgument(_))),
+            "{result:?}"
+        );
+        assert_nothing_sent(&mut server_io).await;
+    }
+
+    #[tokio::test]
+    async fn fetch_with_literal_marker_in_items_is_rejected_before_send() {
+        let (client_io, mut server_io) = duplex(1024);
+        let mut session = selected_session(client_io);
+        let result = session.fetch("1", "BODY[] {20}").await;
+        assert!(
+            matches!(result, Err(ClientError::InvalidArgument(_))),
+            "{result:?}"
+        );
+        assert_nothing_sent(&mut server_io).await;
+    }
+
+    #[tokio::test]
+    async fn store_with_flag_list_break_out_is_rejected_before_send() {
+        let (client_io, mut server_io) = duplex(1024);
+        let mut session = selected_session(client_io);
+        let result = session
+            .store("1", StoreAction::Add, &[Flag::Custom("x \\Deleted".into())])
+            .await;
+        assert!(
+            matches!(result, Err(ClientError::InvalidArgument(_))),
+            "{result:?}"
+        );
+        assert_nothing_sent(&mut server_io).await;
+    }
+
+    #[tokio::test]
+    async fn uid_store_with_invalid_uid_set_is_rejected_before_send() {
+        let (client_io, mut server_io) = duplex(1024);
+        let mut session = selected_session(client_io);
+        let result = session
+            .uid_store("1 EXPUNGE", StoreAction::Add, &[Flag::Seen])
+            .await;
+        assert!(
+            matches!(result, Err(ClientError::InvalidArgument(_))),
+            "{result:?}"
+        );
+        assert_nothing_sent(&mut server_io).await;
+    }
+
+    #[tokio::test]
+    async fn move_messages_with_crlf_in_sequence_set_is_rejected_before_send() {
+        let caps = Capabilities {
+            move_ext: true,
+            ..Capabilities::default()
+        };
+        let (client_io, mut server_io) = duplex(1024);
+        let mut session = selected_session_with_caps(client_io, caps);
+        let result = session
+            .move_messages("1\r\nX7 EXPUNGE\r\nX8 MOVE 1", "Trash")
+            .await;
+        assert!(
+            matches!(result, Err(ClientError::InvalidArgument(_))),
+            "{result:?}"
+        );
+        assert_nothing_sent(&mut server_io).await;
+    }
+
+    #[tokio::test]
+    async fn search_with_crlf_in_text_is_rejected_before_send() {
+        let (client_io, mut server_io) = duplex(1024);
+        let mut session = selected_session(client_io);
+        let result = session
+            .search(SearchQuery::subject("x\r\nX3 EXPUNGE"))
+            .await;
+        assert!(
+            matches!(result, Err(ClientError::InvalidArgument(_))),
+            "{result:?}"
+        );
+        assert_nothing_sent(&mut server_io).await;
     }
 
     #[tokio::test]

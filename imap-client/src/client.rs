@@ -145,10 +145,15 @@ impl RawClient {
     /// Send a command and return a receiver for its tagged response without
     /// awaiting. Used by long-running commands (e.g. IDLE) where the caller
     /// needs to interleave other I/O before the tagged reply arrives.
+    ///
+    /// Returns [`ClientError::InvalidArgument`] without writing anything if
+    /// `cmd` contains CR, LF or NUL, which would end the command early and
+    /// let the remaining bytes run as further commands.
     pub async fn send_command_async(
         &mut self,
         cmd: &str,
     ) -> Result<(String, oneshot::Receiver<Result<Vec<u8>, ClientError>>), ClientError> {
+        crate::wire::reject_line_breaks(cmd)?;
         let tag = self.next_tag();
         let bytes = format!("{} {}\r\n", tag, cmd).into_bytes();
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -533,11 +538,6 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn test_unterminated_frame_is_bounded() {
-        // A server that streams a frame which never terminates (no CRLF)
-        // must not grow the read buffer without limit. Drive `read_loop`
-        // directly with a tiny ceiling so the test stays fast — exercising
     /// A server-sent frame that is not merely incomplete (here a literal
     /// over the size cap) must end the connection. IMAP framing cannot be
     /// resynchronised: the bytes that follow are the body of the message
@@ -628,6 +628,11 @@ mod tests {
         assert_eq!(received, FRAMES);
     }
 
+    #[tokio::test]
+    async fn test_unterminated_frame_is_bounded() {
+        // A server that streams a frame which never terminates (no CRLF)
+        // must not grow the read buffer without limit. Drive `read_loop`
+        // directly with a tiny ceiling so the test stays fast — exercising
         // the real 64 MiB `MAX_FRAME_SIZE` would allocate 64 MiB.
         let (client_io, mut server_io) = duplex(8192);
 

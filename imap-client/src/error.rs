@@ -32,4 +32,9 @@ pub enum ClientError {
     /// The command did not receive its tagged response within the timeout.
     #[error("Command timed out")]
     Timeout,
+    /// A caller-supplied argument cannot be sent safely: it contains a line
+    /// break, or does not match the IMAP grammar it is used in. The string
+    /// names the argument; the offending value is never included.
+    #[error("invalid argument: {0}")]
+    InvalidArgument(&'static str),
 }

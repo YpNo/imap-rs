@@ -26,6 +26,7 @@ pub mod flags;
 pub mod idle;
 pub mod search;
 pub mod session;
+mod wire;
 
 pub use capabilities::Capabilities;
 pub use client::RawClient;
