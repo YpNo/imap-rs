@@ -1,0 +1,53 @@
+name: Security audit
+
+# Weekly dependency audit, kept apart from the build/test matrix in ci.yml:
+# between two Sundays nothing in the tree changed, only the advisory
+# databases did, so rebuilding and retesting would prove nothing. Both jobs
+# only read Cargo.lock.
+#
+#   event             | jobs
+#   ------------------+---------------------------------------------------------
+#   schedule (weekly) | security (cargo-deny: advisories, bans, licenses, sources)
+#                     | audit (cargo-audit: RustSec advisories, yanked and
+#                     |        unmaintained crates, denied as warnings)
+#   workflow_dispatch | the same two, on demand
+#
+# cargo-deny also runs on every pull request (ci.yml) so a new dependency is
+# vetted before it is merged.
+
+on:
+  schedule:
+    - cron: '0 0 * * 0' # Sundays, 00:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    name: Security & License Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+
+  audit:
+    name: RustSec Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install cargo-audit
+        # rustsec/audit-check would open an issue per finding, but its only
+        # release (v2.0.0) still runs on Node 20, which GitHub is retiring, and
+        # the Node 24 fix is unreleased. The CLI through the same pinned
+        # installer as cargo-tarpaulin is the smaller dependency.
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-audit@0.22.2
+      - name: Run cargo audit
+        # Called as the binary, not as a cargo subcommand, so the job does not
+        # need a Rust toolchain at all.
+        run: cargo-audit audit --deny warnings
