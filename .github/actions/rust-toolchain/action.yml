@@ -1,0 +1,35 @@
+name: Install Rust toolchain
+description: >-
+  Installs the Rust toolchain pinned in rust-toolchain.toml, so the version
+  lives in exactly one place. Wraps dtolnay/rust-toolchain, which does not
+  read that file itself.
+
+inputs:
+  components:
+    description: Comma-separated rustup components to add (for example "rustfmt" or "clippy").
+    required: false
+    default: ''
+
+outputs:
+  version:
+    description: The toolchain channel read from rust-toolchain.toml (for example "1.99.1").
+    value: ${{ steps.toolchain.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Read the channel from rust-toolchain.toml
+      id: toolchain
+      shell: bash
+      run: |
+        version="$(sed -n 's/^channel = "\([^"]*\)"[[:space:]]*$/\1/p' rust-toolchain.toml)"
+        if [ -z "$version" ]; then
+          echo "::error file=rust-toolchain.toml::no 'channel' entry found"
+          exit 1
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+    - name: Install Rust ${{ steps.toolchain.outputs.version }}
+      uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      with:
+        toolchain: ${{ steps.toolchain.outputs.version }}
+        components: ${{ inputs.components }}
