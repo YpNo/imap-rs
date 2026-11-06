@@ -8,6 +8,13 @@ on:
   schedule:
     - cron: '0 0 * * 0' # Run weekly on Sunday for security audits
 
+# One run per pull request (keyed on its number) or per branch. A new push to
+# a PR cancels the superseded run; pushes to main queue instead, so coverage
+# and Sonar keep a data point for every merged commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 
