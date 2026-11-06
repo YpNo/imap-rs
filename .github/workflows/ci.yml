@@ -58,6 +58,25 @@ jobs:
       - name: Run cargo test
         run: cargo test --all-features
 
+  msrv:
+    name: MSRV (Rust 1.95.0)
+    runs-on: ubuntu-latest
+    env:
+      # rustup gives rust-toolchain.toml (the day-to-day pin) precedence over
+      # the default toolchain the action sets, so force the MSRV explicitly.
+      RUSTUP_TOOLCHAIN: 1.95.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust 1.95.0 (rust-version in Cargo.toml)
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: 1.95.0
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Check the workspace on the declared MSRV
+        # Keep in sync with `rust-version` in Cargo.toml.
+        run: cargo check --workspace --all-features --all-targets --locked
+
   examples:
     name: Build Examples
     runs-on: ubuntu-latest
