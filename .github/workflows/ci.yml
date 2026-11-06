@@ -49,11 +49,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # We need cmake, nasm, and go for boring-sys (BoringSSL build)
-      - name: Install Dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libclang-dev nasm golang-go chromium-browser
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -126,8 +121,6 @@ jobs:
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: 1.99.1
-      - name: Install Dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential nasm golang-go
       - name: Rust Cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Check Documentation
@@ -142,11 +135,6 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # Dependencies for building boring-sys
-      - name: Install Dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libclang-dev nasm golang-go chromium-browser
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
