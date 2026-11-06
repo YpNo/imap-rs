@@ -20,9 +20,39 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Route jobs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # paths-filter lists a pull request's files via the API
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Detect changes outside documentation
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          # A file counts when it matches '**' and none of the exclusions, so
+          # anything not listed below (a new fixture, a config file) still
+          # triggers the Rust jobs. Only pure documentation is filtered out.
+          predicate-quantifier: some-with-excludes
+          filters: |
+            rust:
+              - '**'
+              - '!**/*.md'
+              - '!docs/**'
+              - '!LICENSE*'
+              - '!assets/**'
+              - '!.agents/**'
+              - '!.claude/**'
+
   format:
     name: Check Formatting
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
@@ -35,6 +65,8 @@ jobs:
   clippy:
     name: Lint with Clippy
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
@@ -50,6 +82,8 @@ jobs:
   test:
     name: Run Tests
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
@@ -62,6 +96,8 @@ jobs:
   msrv:
     name: MSRV (Rust 1.95.0)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     env:
       # rustup gives rust-toolchain.toml (the day-to-day pin) precedence over
       # the default toolchain the action sets, so force the MSRV explicitly.
@@ -81,6 +117,8 @@ jobs:
   examples:
     name: Build Examples
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
@@ -95,6 +133,8 @@ jobs:
   fuzz-build:
     name: Fuzz Target Builds
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
@@ -109,6 +149,8 @@ jobs:
   security:
     name: Security & License Audit
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Run cargo-deny
@@ -119,6 +161,8 @@ jobs:
   sonarqube:
     name: SonarQube
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -131,6 +175,8 @@ jobs:
   doc:
     name: Documentation Check
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
@@ -145,6 +191,8 @@ jobs:
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     permissions:
       contents: read
     steps:
@@ -167,3 +215,32 @@ jobs:
         with:
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  # Single always-reported check for branch protection: green when every job
+  # above succeeded or was skipped by the routing, red on any failure or
+  # cancellation. Skipped required jobs already count as passed on GitHub;
+  # this job exists so protection can depend on one stable name.
+  ci-result:
+    name: CI result
+    runs-on: ubuntu-latest
+    needs:
+      - changes
+      - format
+      - clippy
+      - msrv
+      - test
+      - examples
+      - fuzz-build
+      - security
+      - sonarqube
+      - doc
+      - coverage
+    if: always()
+    steps:
+      - name: Fail if any job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          exit 1
