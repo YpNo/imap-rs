@@ -28,7 +28,6 @@ name = "imap_client"
 imap-core = { package = "imap-rs-core", path = "../imap-core", version = "0.2.4" }
 tokio.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
 zeroize.workspace = true
 bytes.workspace = true
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
@@ -44,6 +43,8 @@ move_ext = []
 
 [dev-dependencies]
 trybuild = "1.0.122"
+# The trybuild fixtures use `#[tokio::main]`, which needs the multi-thread runtime.
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }
 
 [package.metadata.docs.rs]
 all-features = true

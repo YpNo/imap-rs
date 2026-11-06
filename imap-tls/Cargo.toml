@@ -31,11 +31,12 @@ imap-core = { package = "imap-rs-core", path = "../imap-core", version = "0.2.4"
 rustls.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
 bytes.workspace = true
-tokio-rustls = "0.26.6"
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
 webpki-roots = "1.0.11"
 rustls-pki-types = "1.15.1"
 
 [dev-dependencies]
 rcgen = "0.14.10"
+# The example uses `#[tokio::main]`, which needs the multi-thread runtime.
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }
