@@ -1,5 +1,31 @@
 name: Rust CI
 
+# Trigger matrix. Each job runs once per meaningful event; the `changes` job
+# computes the routing and every other job keys its `if:` on one output.
+#
+#   event                        | jobs
+#   -----------------------------+------------------------------------------------
+#   pull_request, normal PR that | format, clippy, msrv, test, examples,
+#   touches non-docs files       | fuzz-build, doc, security, coverage, sonarqube
+#   pull_request, docs only      | changes and ci-result only. Every Rust job is
+#   (**.md, docs/, LICENSE,      | skipped, which GitHub counts as passed for the
+#   assets/, .agents/, .claude/) | required checks.
+#   push to main                 | coverage and sonarqube only. The PR already ran
+#                                | the full gate on this tree; these two still run
+#                                | because Codecov and SonarCloud need a main-
+#                                | branch data point to compare the next PR with.
+#                                | Tarpaulin executes the whole test suite, so
+#                                | coverage doubles as the post-merge smoke test.
+#   schedule (weekly)            | nothing here; see audit.yml (cargo-deny and
+#                                | cargo-audit against the lockfile only).
+#
+# Caching: every job keeps its own Swatinem/rust-cache key. The jobs run in
+# parallel with different build profiles (check metadata for clippy, dev for
+# test and examples, rustdoc for doc, instrumented for tarpaulin, another
+# compiler for msrv), so a shared key cannot hand one job's artifacts to the
+# next, and a cold `cargo check` of this workspace takes under a minute, less
+# than moving a target directory between jobs would.
+
 on:
   push:
     branches: [main]
@@ -27,7 +53,10 @@ jobs:
       contents: read
       pull-requests: read # paths-filter lists a pull request's files via the API
     outputs:
-      rust: ${{ steps.filter.outputs.rust }}
+      # Full quality gate: a pull request that touches more than documentation.
+      quality: ${{ github.event_name == 'pull_request' && steps.filter.outputs.rust == 'true' }}
+      # Coverage and Sonar: the same pull requests, plus every push to main.
+      metrics: ${{ steps.filter.outputs.rust == 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Detect changes outside documentation
@@ -52,7 +81,7 @@ jobs:
     name: Check Formatting
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
@@ -66,7 +95,7 @@ jobs:
     name: Lint with Clippy
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
@@ -83,7 +112,7 @@ jobs:
     name: Run Tests
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
@@ -97,7 +126,7 @@ jobs:
     name: MSRV (Rust 1.95.0)
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.quality == 'true'
     env:
       # rustup gives rust-toolchain.toml (the day-to-day pin) precedence over
       # the default toolchain the action sets, so force the MSRV explicitly.
@@ -118,7 +147,7 @@ jobs:
     name: Build Examples
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
@@ -134,7 +163,7 @@ jobs:
     name: Fuzz Target Builds
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
@@ -150,7 +179,7 @@ jobs:
     name: Security & License Audit
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Run cargo-deny
@@ -162,7 +191,7 @@ jobs:
     name: SonarQube
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.metrics == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -176,7 +205,7 @@ jobs:
     name: Documentation Check
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
@@ -192,7 +221,7 @@ jobs:
     name: Code Coverage
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.metrics == 'true'
     permissions:
       contents: read
     steps:
