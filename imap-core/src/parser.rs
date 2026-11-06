@@ -147,6 +147,23 @@ impl<'a> Parser<'a> {
         self.consume_byte(b' ')
     }
 
+    /// Consume `NIL`, or classify why it is absent. A truncated `N` / `NI`
+    /// at the end of the buffer is `Incomplete`; anything else is not an
+    /// nstring and is `Malformed`.
+    fn expect_nil(&mut self) -> Result<(), ParseError> {
+        const NIL: &[u8] = b"NIL";
+        if self.try_consume_keyword_ci(NIL) {
+            return Ok(());
+        }
+        let rest = self.remaining();
+        let is_truncated_nil =
+            rest.len() < NIL.len() && rest.iter().zip(NIL).all(|(a, b)| a.eq_ignore_ascii_case(b));
+        if is_truncated_nil {
+            return Err(ParseError::Incomplete);
+        }
+        Err(ParseError::Malformed("expected nstring"))
+    }
+
     /// Decimal number — `1*DIGIT`, returned as `u32`.
     fn parse_number(&mut self) -> Result<u32, ParseError> {
         let start = self.pos;
@@ -290,11 +307,8 @@ impl<'a> Parser<'a> {
                 Ok(Some(s))
             }
             _ => {
-                if self.try_consume_keyword_ci(b"NIL") {
-                    Ok(None)
-                } else {
-                    Err(ParseError::Malformed("expected nstring"))
-                }
+                self.expect_nil()?;
+                Ok(None)
             }
         }
     }
@@ -341,6 +355,9 @@ impl<'a> Parser<'a> {
             }
         }
         if start == self.pos {
+            if self.is_eof() {
+                return Err(ParseError::Incomplete);
+            }
             return Err(ParseError::Malformed("expected flag/atom"));
         }
         core::str::from_utf8(&self.input[start..self.pos])
@@ -525,6 +542,11 @@ impl<'a> Parser<'a> {
                 break;
             }
             self.pos += 1;
+        }
+        // A code atom is always followed by `]` or SP; reaching the end of
+        // the buffer means the atom is truncated, not finished.
+        if self.is_eof() {
+            return Err(ParseError::Incomplete);
         }
         if start == self.pos {
             return Err(ParseError::Malformed("empty response code"));
@@ -861,6 +883,11 @@ impl<'a> Parser<'a> {
             }
             self.pos += 1;
         }
+        // An attribute name is always followed by SP, `[` or `)`; reaching
+        // the end of the buffer means the name is truncated.
+        if self.is_eof() {
+            return Err(ParseError::Incomplete);
+        }
         if start == self.pos {
             return Err(ParseError::Malformed("expected FETCH att name"));
         }
@@ -892,11 +919,8 @@ impl<'a> Parser<'a> {
             }
             b'{' => self.parse_literal(),
             _ => {
-                if self.try_consume_keyword_ci(b"NIL") {
-                    Ok(&self.input[self.pos..self.pos])
-                } else {
-                    Err(ParseError::Malformed("expected nstring"))
-                }
+                self.expect_nil()?;
+                Ok(&self.input[self.pos..self.pos])
             }
         }
     }
@@ -910,11 +934,8 @@ impl<'a> Parser<'a> {
             }
             b'{' => Ok(Some(self.parse_literal()?)),
             _ => {
-                if self.try_consume_keyword_ci(b"NIL") {
-                    Ok(None)
-                } else {
-                    Err(ParseError::Malformed("expected nstring"))
-                }
+                self.expect_nil()?;
+                Ok(None)
             }
         }
     }
@@ -1948,5 +1969,94 @@ mod tests {
             res,
             Err(ParseError::Malformed("CR/LF before terminator"))
         ));
+    }
+}
+
+/// Framing contract: every strict prefix of a complete response must parse
+/// as `Incomplete`. The client's read loop relies on this to tell "wait for
+/// more bytes" from "protocol violation"; a prefix that returns any other
+/// error makes a benign read boundary look like a hostile server.
+#[cfg(test)]
+mod prefix_soundness_tests {
+    use super::parse_response;
+    use crate::error::ParseError;
+
+    /// Complete, valid frames covering every grammar branch the parser
+    /// dispatches on. Each one must parse fully with no remainder.
+    const FRAMES: &[&[u8]] = &[
+        b"+ ready\r\n",
+        b"+ [ALERT] go ahead\r\n",
+        b"* OK IMAP4rev2 ready\r\n",
+        b"* PREAUTH logged in\r\n",
+        b"* BYE shutting down\r\n",
+        b"* OK [UIDVALIDITY 3857529045] UIDs valid\r\n",
+        b"* OK [UIDNEXT 4392] Predicted next UID\r\n",
+        b"* OK [PERMANENTFLAGS (\\Deleted \\Seen \\*)] Limited\r\n",
+        b"* OK [CAPABILITY IMAP4rev2 IDLE] ready\r\n",
+        b"* NO [ALERT] disk full\r\n",
+        b"A0001 OK [READ-WRITE] SELECT completed\r\n",
+        b"A0002 NO [AUTHENTICATIONFAILED] invalid\r\n",
+        b"A0003 BAD command unknown\r\n",
+        b"A0004 OK [CAPABILITY IMAP4rev2 AUTH=PLAIN] done\r\n",
+        b"* CAPABILITY IMAP4rev2 STARTTLS AUTH=PLAIN IDLE\r\n",
+        b"* 172 EXISTS\r\n",
+        b"* 3 EXPUNGE\r\n",
+        b"* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n",
+        b"* LIST (\\HasNoChildren) \"/\" \"INBOX\"\r\n",
+        b"* LIST () NIL \"Archive\"\r\n",
+        b"* LIST (\\Noselect) \"/\" {5}\r\nfoo/b\r\n",
+        b"* STATUS \"INBOX\" (MESSAGES 231 UIDNEXT 44292)\r\n",
+        b"* SEARCH 2 84 882\r\n",
+        b"* SEARCH\r\n",
+        b"* 12 FETCH (UID 4827 FLAGS (\\Seen))\r\n",
+        b"* 12 FETCH (RFC822.SIZE 4286 INTERNALDATE \"17-Jul-1996 02:44:25 -0700\")\r\n",
+        b"* 12 FETCH (BODY[] {5}\r\nhello)\r\n",
+        b"* 12 FETCH (BODY[HEADER] NIL)\r\n",
+        b"* 12 FETCH (BODY[]<0> \"abc\")\r\n",
+        b"* 12 FETCH (RFC822 NIL RFC822.HEADER \"x\" RFC822.TEXT {2}\r\nhi)\r\n",
+        b"* 12 FETCH (ENVELOPE (NIL \"subj\" ((\"a\" NIL \"b\" \"c\")) NIL NIL NIL NIL NIL NIL NIL))\r\n",
+        b"* 12 FETCH (BODYSTRUCTURE (\"text\" \"plain\" NIL NIL NIL \"7bit\" 3 1))\r\n",
+        b"* 12 FETCH (BODY (\"text\" \"plain\" NIL NIL NIL \"7bit\" 3 1))\r\n",
+    ];
+
+    #[test]
+    fn fixtures_parse_completely() {
+        for frame in FRAMES {
+            match parse_response(frame) {
+                Ok((rest, _)) => assert!(
+                    rest.is_empty(),
+                    "fixture left a remainder: {:?}",
+                    String::from_utf8_lossy(frame)
+                ),
+                Err(e) => panic!(
+                    "fixture failed to parse ({e:?}): {:?}",
+                    String::from_utf8_lossy(frame)
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn every_strict_prefix_returns_incomplete() {
+        let mut unsound = Vec::new();
+        for frame in FRAMES {
+            for cut in 0..frame.len() {
+                let prefix = &frame[..cut];
+                match parse_response(prefix) {
+                    Err(ParseError::Incomplete) => {}
+                    other => unsound.push(format!(
+                        "{:?} -> {:?}",
+                        String::from_utf8_lossy(prefix),
+                        other.map(|_| "Ok")
+                    )),
+                }
+            }
+        }
+        assert!(
+            unsound.is_empty(),
+            "{} prefixes are not Incomplete:\n{}",
+            unsound.len(),
+            unsound.join("\n")
+        );
     }
 }

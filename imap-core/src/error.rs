@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 /// Errors produced by the IMAP response parser.
-#[derive(Error, Debug, PartialEq, Eq)]
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
     /// Input ended before a complete response could be parsed.
     /// The caller should accumulate more bytes and retry.
