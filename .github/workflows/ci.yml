@@ -10,6 +10,10 @@ name: Rust CI
 #   pull_request, docs only      | changes and ci-result only. Every Rust job is
 #   (**.md, docs/, LICENSE,      | skipped, which GitHub counts as passed for the
 #   assets/, .agents/, .claude/) | required checks.
+#   pull_request from a          | release-check only (cargo package --workspace
+#   release-plz-* branch of this | --locked). The PR bumps versions and changelogs;
+#   repo, opened by the owner    | packaging is the only thing that can break, and
+#                                | the code was fully tested when it was merged.
 #   push to main                 | coverage and sonarqube only. The PR already ran
 #                                | the full gate on this tree; these two still run
 #                                | because Codecov and SonarCloud need a main-
@@ -52,11 +56,18 @@ jobs:
     permissions:
       contents: read
       pull-requests: read # paths-filter lists a pull request's files via the API
+    env:
+      # The release PR is the one release-plz opens from a release-plz-* branch
+      # of this repository with the owner's token. The branch name alone is not
+      # enough: a fork branch named that way must not skip the quality gate.
+      IS_RELEASE_PR: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-plz-') && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner }}
     outputs:
-      # Full quality gate: a pull request that touches more than documentation.
-      quality: ${{ github.event_name == 'pull_request' && steps.filter.outputs.rust == 'true' }}
+      # Full quality gate: a normal pull request that touches more than documentation.
+      quality: ${{ github.event_name == 'pull_request' && env.IS_RELEASE_PR != 'true' && steps.filter.outputs.rust == 'true' }}
       # Coverage and Sonar: the same pull requests, plus every push to main.
-      metrics: ${{ steps.filter.outputs.rust == 'true' }}
+      metrics: ${{ env.IS_RELEASE_PR != 'true' && steps.filter.outputs.rust == 'true' }}
+      # release-plz's version-bump PR: packaging check only.
+      release: ${{ env.IS_RELEASE_PR == 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Detect changes outside documentation
@@ -245,6 +256,25 @@ jobs:
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
+  release-check:
+    name: Release PR packaging check
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.release == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Package every crate as crates.io will see it
+        # Packages the workspace in dependency order against a temporary
+        # registry and builds each .crate from its own contents, which is what
+        # `cargo publish` does in the release job. Catches files missing from
+        # the package, a stale lockfile entry and intra-workspace version
+        # mismatches before the bump is merged.
+        run: cargo package --workspace --locked
+
   # Single always-reported check for branch protection: green when every job
   # above succeeded or was skipped by the routing, red on any failure or
   # cancellation. Skipped required jobs already count as passed on GitHub;
@@ -264,6 +294,7 @@ jobs:
       - sonarqube
       - doc
       - coverage
+      - release-check
     if: always()
     steps:
       - name: Fail if any job failed or was cancelled
