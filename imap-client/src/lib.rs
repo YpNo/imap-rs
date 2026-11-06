@@ -17,6 +17,7 @@
 //!   zeroized on drop and redacted in `Debug`.
 #![forbid(unsafe_code)]
 
+mod base64;
 pub mod capabilities;
 pub mod client;
 pub mod credentials;

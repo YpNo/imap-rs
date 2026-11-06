@@ -20,8 +20,7 @@
 use std::marker::PhantomData;
 use std::time::Duration;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use crate::base64;
 use tokio::sync::broadcast;
 
 use crate::capabilities::Capabilities;
@@ -223,7 +222,7 @@ impl Session<Unauthenticated, Tls> {
         sasl.extend_from_slice(user.as_bytes());
         sasl.push(0);
         sasl.extend_from_slice(pass.as_str().as_bytes());
-        let mut payload = BASE64_STANDARD.encode(&sasl).into_bytes();
+        let mut payload = base64::encode(&sasl).into_bytes();
         payload.extend_from_slice(b"\r\n");
         self.raw.send_raw(payload).await?;
 
@@ -660,10 +659,8 @@ mod tests {
         // Read base64 SASL payload
         let n = server_io.read(&mut buf).await.unwrap();
         let payload_b64 = String::from_utf8_lossy(&buf[..n]).trim_end().to_string();
-        let payload = base64::engine::general_purpose::STANDARD
-            .decode(payload_b64)
-            .unwrap();
-        assert_eq!(payload, b"\0user\0pass");
+        // RFC 4616 PLAIN message "\0user\0pass" (empty authzid), base64-encoded.
+        assert_eq!(payload_b64, "AHVzZXIAcGFzcw==");
 
         server_io
             .write_all(format!("{} OK [CAPABILITY IMAP4rev2] auth done\r\n", tag).as_bytes())

@@ -52,6 +52,6 @@ publish = true
 [workspace.dependencies]
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", default-features = false, features = ["rt", "net", "io-util", "sync", "time", "macros"] }
-zeroize = { version = "1.9.1", features = ["zeroize_derive"] }
+zeroize = "1.9.1"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 bytes = "1.12.1"

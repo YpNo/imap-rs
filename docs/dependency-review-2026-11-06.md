@@ -56,9 +56,9 @@ use `#[tokio::main]`). No source change required.
 | `cargo check --all-targets --all-features` | ok | ok | — |
 | Test suite (158 tests) | ok | ok (158 passed, `--no-fail-fast`) | — |
 
-Replacing `base64` and `zeroize_derive` on top of that (source changes) is
-estimated to remove a further 3 crates (`base64`, `zeroize_derive`, `syn 2`)
-and leave a single `syn` version in the build.
+Replacing `base64` and `zeroize_derive` on top of that (source changes,
+second commit on `chore/deps-slim`) removes `base64`, `zeroize_derive` and
+`syn 2`, leaving a single `syn` version in the build: 40 crates with normal edges, 43 with build edges, 146 `Cargo.lock` entries.
 
 The remaining C in the graph is `ring`'s vendored BoringSSL primitives
 (built with `cc`, no system library, no `cmake`). That is the accepted
@@ -106,9 +106,8 @@ trade-off behind ADR-001; `aws-lc-rs` is not.
 | PR | Content | Risk |
 |---|---|---|
 | this one | Renovate consolidation (done) | none beyond upstream patch releases |
-| `chore/deps-slim` | §2 manifest-only changes + deny.toml ban + CI apt cleanup | low: verified by scratch build; no public API change |
-| `refactor/no-base64-no-derive` | in-tree base64 encoder, manual `Zeroize` impls | low: 2 files, covered by existing SASL and credential tests + new vector table |
-| `ci/msrv-and-pins` | MSRV job, tarpaulin pin, `push` trigger, single toolchain source | low |
+| `chore/deps-slim` (done, 2 commits) | §2 manifest-only changes + deny.toml ban; then the in-tree base64 encoder (`imap-client/src/base64.rs`, RFC 4648 vectors) and manual `Zeroize` impls | low: no public API change; `Password`/`OAuthToken` still implement `Zeroize` + `ZeroizeOnDrop` |
+| `ci-hardening` (in progress, separate session) | MSRV job, tarpaulin pin, `push` trigger, single toolchain source, apt cleanup | low |
 
 Nothing here changes the public API; all of it can ship in 0.2.x patch
 releases.

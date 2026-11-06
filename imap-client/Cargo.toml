@@ -30,7 +30,6 @@ tokio.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
 bytes.workspace = true
-base64 = { version = "0.23.1", default-features = false, features = ["std"] }
 
 [features]
 default = []
