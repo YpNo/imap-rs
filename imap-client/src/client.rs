@@ -273,11 +273,15 @@ async fn read_loop<R>(
                             (consumed, routing)
                         }
                         Err(imap_core::error::ParseError::Incomplete) => break,
-                        Err(_) => {
-                            // Malformed frame — drop the buffer to resync.
-                            // (A real protocol error; we close the loop.)
-                            buffer.clear();
-                            break;
+                        Err(e) => {
+                            // IMAP framing cannot be resynchronised: after a
+                            // bad frame the next bytes may be the body of the
+                            // message being fetched, written by a third
+                            // party, and parsing them would let that party
+                            // forge responses. Fail every waiter and stop.
+                            fail_all_pending(&pending_commands, || ClientError::Parse(e.clone()))
+                                .await;
+                            return;
                         }
                     };
                     let (consumed, routing) = routing;
@@ -336,6 +340,7 @@ async fn dispatch_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use imap_core::error::ParseError;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
@@ -533,6 +538,96 @@ mod tests {
         // A server that streams a frame which never terminates (no CRLF)
         // must not grow the read buffer without limit. Drive `read_loop`
         // directly with a tiny ceiling so the test stays fast — exercising
+    /// A server-sent frame that is not merely incomplete (here a literal
+    /// over the size cap) must end the connection. IMAP framing cannot be
+    /// resynchronised: the bytes that follow are the body of the message
+    /// being fetched, written by whoever sent that e-mail, and must never be
+    /// interpreted as protocol responses.
+    #[tokio::test]
+    async fn read_loop_malformed_frame_fails_pending_and_stops_parsing() {
+        let (client_io, mut server_io) = duplex(4096);
+        let mut client = RawClient::new(client_io);
+        let mut events = client.events();
+
+        let server = tokio::spawn(async move {
+            let mut buf = [0u8; 256];
+            let _ = server_io.read(&mut buf).await.unwrap();
+            server_io
+                .write_all(b"* 1 FETCH (BODY[] {100000000}\r\n")
+                .await
+                .unwrap();
+            // Let the client read and reject the first frame on its own, so the
+            // forged bytes arrive in a later read, as they would mid-message.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            // Attacker-authored message body shaped like protocol traffic.
+            server_io
+                .write_all(b"* 999 EXISTS\r\nA0001 OK injected\r\n")
+                .await
+                .unwrap();
+            server_io
+        });
+
+        let result = client.execute_command("FETCH 1 BODY[]").await;
+        assert!(
+            matches!(
+                result,
+                Err(ClientError::Parse(ParseError::LiteralTooLarge { .. }))
+            ),
+            "pending command must fail with the parse error, got {result:?}"
+        );
+
+        let _server_io = server.await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            matches!(
+                events.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+                    | Err(broadcast::error::TryRecvError::Closed)
+            ),
+            "no frame after the malformed one may be broadcast"
+        );
+    }
+
+    /// Regression for the benign side of the same defect: a long FETCH
+    /// burst delivered in chunks that split frames mid-attribute-name must
+    /// arrive intact, with the tagged completion routed to its command.
+    #[tokio::test]
+    async fn read_loop_fetch_burst_split_mid_attribute_delivers_every_frame() {
+        const FRAMES: usize = 1000;
+        const CHUNK: usize = 37;
+        let (client_io, mut server_io) = duplex(1 << 20);
+        let mut client = RawClient::new(client_io);
+        let mut events = client.events();
+
+        let mut wire = Vec::new();
+        for n in 1..=FRAMES {
+            wire.extend_from_slice(format!("* {n} FETCH (FLAGS (\\Seen) UID {n})\r\n").as_bytes());
+        }
+        wire.extend_from_slice(b"A0001 OK FETCH completed\r\n");
+
+        let server = tokio::spawn(async move {
+            let mut buf = [0u8; 256];
+            let _ = server_io.read(&mut buf).await.unwrap();
+            // An odd chunk size lands cuts at every offset, including inside
+            // `FLAGS` and `UID`; yielding lets each chunk be read separately.
+            for chunk in wire.chunks(CHUNK) {
+                server_io.write_all(chunk).await.unwrap();
+                tokio::task::yield_now().await;
+            }
+            server_io
+        });
+
+        let result = client.execute_command("FETCH 1:* (FLAGS UID)").await;
+        assert!(result.is_ok(), "tagged OK must be routed, got {result:?}");
+        let _server_io = server.await.unwrap();
+
+        let mut received = 0;
+        while events.try_recv().is_ok() {
+            received += 1;
+        }
+        assert_eq!(received, FRAMES);
+    }
+
         // the real 64 MiB `MAX_FRAME_SIZE` would allocate 64 MiB.
         let (client_io, mut server_io) = duplex(8192);
 
