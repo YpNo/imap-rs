@@ -142,9 +142,10 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
-      - name: Install cargo-tarpaulin (binary)
-        run: |
-          curl -s https://api.github.com/repos/xd009642/tarpaulin/releases/latest | grep browser_download_url | grep x86_64-unknown-linux-musl | cut -d '"' -f 4 | xargs curl -L | tar xz -C /usr/local/bin
+      - name: Install cargo-tarpaulin
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-tarpaulin@0.37.6
 
       - name: Run cargo-tarpaulin
         run: cargo tarpaulin --all-features --workspace --timeout 120 --out xml
