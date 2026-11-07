@@ -25,7 +25,7 @@ include = [
 name = "imap_client"
 
 [dependencies]
-imap-core = { package = "imap-rs-core", path = "../imap-core", version = "0.2.4" }
+imap-core = { package = "imap-rs-core", path = "../imap-core", version = "0.3.0" }
 tokio.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
