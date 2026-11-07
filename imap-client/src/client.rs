@@ -557,11 +557,11 @@ async fn dispatch_frame(
             };
             let result = match status {
                 Status::Ok => Ok(frame.to_vec()),
-                Status::No | Status::Bad => Err(ClientError::CommandFailed(text)),
+                Status::No | Status::Bad => Err(ClientError::command_failed(&text)),
                 Status::Bye => Err(ClientError::ConnectionClosed),
                 // PREAUTH is only valid as an untagged greeting; if it
-                // somehow appears tagged we surface the raw text.
-                Status::PreAuth => Err(ClientError::CommandFailed(text)),
+                // somehow appears tagged we surface its text.
+                Status::PreAuth => Err(ClientError::command_failed(&text)),
             };
             let _ = tx.send(result);
             return;
@@ -654,6 +654,25 @@ mod tests {
             .expect("frame was swallowed by a dropped stream")
             .unwrap();
         assert_eq!(&frame[..], b"+ idling\r\n");
+    }
+
+    #[tokio::test]
+    async fn tagged_no_text_is_sanitised_before_reaching_the_error() {
+        let (client_io, mut server_io) = duplex(1024);
+        let mut client = RawClient::new(client_io);
+        let task = tokio::spawn(async move { client.execute_command("NOOP").await });
+
+        let mut buf = [0u8; 64];
+        let _ = server_io.read(&mut buf).await.unwrap();
+        server_io
+            .write_all(b"A0001 NO \x1b[2J\x1b[31mFAKE ALERT\x07\r\n")
+            .await
+            .unwrap();
+
+        let err = task.await.unwrap().unwrap_err();
+        let shown = err.to_string();
+        assert!(!shown.chars().any(char::is_control), "{shown:?}");
+        assert!(shown.contains("FAKE ALERT"));
     }
 
     #[tokio::test]

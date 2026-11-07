@@ -246,7 +246,7 @@ where
             match &response {
                 imap_core::ast::Response::Status(s) if s.tag == Some("T0001") => {
                     if !matches!(s.status, imap_core::ast::Status::Ok) {
-                        return Err(ClientError::CommandFailed(format!(
+                        return Err(ClientError::command_failed(&format!(
                             "CAPABILITY failed: {}",
                             s.text
                         )));
@@ -276,7 +276,7 @@ where
             && s.tag == Some("T0002")
         {
             if !matches!(s.status, imap_core::ast::Status::Ok) {
-                return Err(ClientError::CommandFailed(format!(
+                return Err(ClientError::command_failed(&format!(
                     "STARTTLS rejected: {}",
                     s.text
                 )));
