@@ -103,6 +103,20 @@ impl<'a> Parser<'a> {
         self.pos >= self.input.len()
     }
 
+    /// The bytes from `start` to the cursor as text, once a scan has stopped.
+    ///
+    /// Every token is followed by something (at least the frame's CRLF), so
+    /// a scan that stopped at the end of the buffer saw a truncated token:
+    /// report `Incomplete` before validating UTF-8, which would otherwise
+    /// reject a cut through a multi-byte character.
+    fn scanned_text(&self, start: usize) -> Result<&'a str, ParseError> {
+        if self.is_eof() {
+            return Err(ParseError::Incomplete);
+        }
+        core::str::from_utf8(&self.input[start..self.pos])
+            .map_err(|_| ParseError::Other("Invalid UTF-8"))
+    }
+
     fn peek(&self) -> Result<u8, ParseError> {
         self.input
             .get(self.pos)
@@ -245,8 +259,7 @@ impl<'a> Parser<'a> {
             }
             return Err(ParseError::Malformed("expected atom"));
         }
-        let bytes = &self.input[start..self.pos];
-        core::str::from_utf8(bytes).map_err(|_| ParseError::Other("Invalid UTF-8"))
+        self.scanned_text(start)
     }
 
     /// Tag — like atom but `+` is also allowed-after-first-position; in
@@ -266,8 +279,7 @@ impl<'a> Parser<'a> {
             }
             return Err(ParseError::Malformed("expected tag"));
         }
-        core::str::from_utf8(&self.input[start..self.pos])
-            .map_err(|_| ParseError::Other("Invalid UTF-8"))
+        self.scanned_text(start)
     }
 
     /// Quoted string: `"..."`. Returns the byte content between the quotes.
@@ -403,8 +415,7 @@ impl<'a> Parser<'a> {
             }
             return Err(ParseError::Malformed("expected flag/atom"));
         }
-        core::str::from_utf8(&self.input[start..self.pos])
-            .map_err(|_| ParseError::Other("Invalid UTF-8"))
+        self.scanned_text(start)
     }
 
     /// Parse a balanced parenthesized expression starting at the current
@@ -452,8 +463,7 @@ impl<'a> Parser<'a> {
             }
             self.pos += 1;
         }
-        core::str::from_utf8(&self.input[start..self.pos])
-            .map_err(|_| ParseError::Other("Invalid UTF-8"))
+        self.scanned_text(start)
     }
 
     // -----------------------------------------------------------------
@@ -948,8 +958,7 @@ impl<'a> Parser<'a> {
             }
             self.pos += 1;
         }
-        core::str::from_utf8(&self.input[start..self.pos])
-            .map_err(|_| ParseError::Other("Invalid UTF-8"))
+        self.scanned_text(start)
     }
 
     /// nstring → byte slice (literal or quoted). NIL becomes an empty slice.
@@ -2160,6 +2169,15 @@ mod prefix_soundness_tests {
         b"* 12 FETCH (ENVELOPE (NIL \"subj\" ((\"a\" NIL \"b\" \"c\")) NIL NIL NIL NIL NIL NIL NIL))\r\n",
         b"* 12 FETCH (BODYSTRUCTURE (\"text\" \"plain\" NIL NIL NIL \"7bit\" 3 1))\r\n",
         b"* 12 FETCH (BODY (\"text\" \"plain\" NIL NIL NIL \"7bit\" 3 1))\r\n",
+        // Multi-byte UTF-8 in every scanner that converts bytes to text, so
+        // prefixes that end mid-character are covered (2-, 3- and 4-byte).
+        b"* OK caf\xc3\xa9 pr\xc3\xaat\r\n",
+        b"A0005 NO \xe6\x97\xa5\xe6\x9c\xac \xf0\x9f\x93\xa7\r\n",
+        b"* OK [X-FOO caf\xc3\xa9 bar] done\r\n",
+        b"* CAPABILITY IMAP4rev2 X-caf\xc3\xa9\r\n",
+        b"* FLAGS (\\Seen caf\xc3\xa9)\r\n",
+        b"* LIST () \"/\" caf\xc3\xa9\r\n",
+        b"* LIST () \"/\" \"caf\xc3\xa9\"\r\n",
     ];
 
     #[test]
