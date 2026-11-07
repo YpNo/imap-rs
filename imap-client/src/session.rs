@@ -223,9 +223,10 @@ impl Session<Unauthenticated, Tls> {
 
         self.raw.send_secret(sasl_plain_line(user, pass)).await?;
 
-        let frame = match reply_rx.await {
-            Ok(r) => r?,
-            Err(_) => return Err(ClientError::ConnectionClosed),
+        let frame = match tokio::time::timeout(self.raw.default_timeout, reply_rx).await {
+            Ok(Ok(r)) => r?,
+            Ok(Err(_)) => return Err(ClientError::ConnectionClosed),
+            Err(_) => return Err(ClientError::Timeout),
         };
         self.refresh_capabilities_from_frame(&frame).await?;
         Ok(self.transition_state())
@@ -997,6 +998,32 @@ mod tests {
             .unwrap();
         let (_, r) = task.await.unwrap();
         r.unwrap();
+    }
+
+    #[tokio::test]
+    async fn authenticate_plain_times_out_when_the_server_never_answers_the_payload() {
+        let (client_io, mut server_io) = duplex(1024);
+        let mut raw = RawClient::new(client_io);
+        raw.default_timeout = Duration::from_millis(100);
+        let session = Session::<Unauthenticated, Tls>::new_in_state(raw, Capabilities::default());
+        let task = tokio::spawn(async move {
+            session
+                .authenticate_plain("user", &Password::new("pass"))
+                .await
+                .map(|_| ())
+        });
+
+        let _tag = read_cmd_tag(&mut server_io).await;
+        server_io.write_all(b"+ \r\n").await.unwrap();
+
+        let result = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("authenticate_plain hung waiting for the tagged reply")
+            .unwrap();
+        assert!(
+            matches!(result, Err(ClientError::Timeout)),
+            "got {result:?}"
+        );
     }
 
     #[test]

@@ -14,7 +14,8 @@
 //!   streaming command ([`RawClient::send_command_streaming`]) goes to that
 //!   command's bounded channel. When the channel is full the dispatcher
 //!   stops reading until the command consumes it, so a large `FETCH` is
-//!   held in memory one bounded batch at a time instead of piling up.
+//!   held in memory one bounded batch of frames at a time instead of
+//!   piling up.
 //! - Every other untagged frame (`EXISTS`, `EXPUNGE`, `[ALERT]`, …) is
 //!   broadcast to [`RawClient::events`] subscribers as a shared [`Bytes`],
 //!   so subscribers never copy it.
@@ -53,10 +54,15 @@ pub type FrameFilter = fn(&Response<'_>) -> bool;
 /// once they fall this far behind. Only unsolicited frames use it: a
 /// command's own data travels on its stream, so this stays small to bound
 /// what a slow subscriber can make the client retain.
+///
+/// The bound counts frames, not bytes: each frame may be up to
+/// [`MAX_FRAME_SIZE`], so a subscriber that stops reading can still hold
+/// this many frames of that size alive until it drops its receiver.
 const EVENT_CHANNEL_CAP: usize = 256;
 
 /// Frames buffered for one streaming command before the dispatcher waits
-/// for that command to consume them.
+/// for that command to consume them. Like [`EVENT_CHANNEL_CAP`] this counts
+/// frames, each up to [`MAX_FRAME_SIZE`].
 const STREAM_CHANNEL_CAP: usize = 32;
 
 /// Capacity of the queue between callers and the write loop.
@@ -148,6 +154,8 @@ fn command_line(tag: &str, cmd: &str) -> Zeroizing<Vec<u8>> {
 pub struct CommandStream {
     frames: mpsc::Receiver<Bytes>,
     reply: ReplyReceiver,
+    /// Where frames go once the caller stops reading the stream.
+    event_tx: broadcast::Sender<Bytes>,
 }
 
 impl CommandStream {
@@ -160,8 +168,16 @@ impl CommandStream {
     }
 
     /// Stop receiving frames and return the tagged-response receiver.
-    /// Frames this command would have received are broadcast instead.
-    pub fn into_reply(self) -> oneshot::Receiver<Result<Vec<u8>, ClientError>> {
+    /// Frames already buffered for this stream, and any later ones it would
+    /// have received, are broadcast to [`RawClient::events`] instead.
+    /// Dropping the stream without calling this discards buffered frames.
+    pub fn into_reply(mut self) -> oneshot::Receiver<Result<Vec<u8>, ClientError>> {
+        // Closing first stops new sends, so the drain below is complete and
+        // the read loop's next send falls back to the broadcast itself.
+        self.frames.close();
+        while let Ok(frame) = self.frames.try_recv() {
+            let _ = self.event_tx.send(frame);
+        }
         self.reply
     }
 }
@@ -304,7 +320,11 @@ impl RawClient {
     ) -> Result<CommandStream, ClientError> {
         let (frames_tx, frames) = mpsc::channel(STREAM_CHANNEL_CAP);
         let (_tag, reply) = self.enqueue_command(cmd, Some((wants, frames_tx))).await?;
-        Ok(CommandStream { frames, reply })
+        Ok(CommandStream {
+            frames,
+            reply,
+            event_tx: self.event_tx.clone(),
+        })
     }
 
     async fn enqueue_command(
@@ -589,6 +609,29 @@ mod tests {
         let b = second.recv().await.unwrap();
         assert_eq!(&a[..], b"* 3 EXISTS\r\n");
         assert_eq!(a.as_ptr(), b.as_ptr(), "each subscriber got its own copy");
+    }
+
+    #[tokio::test]
+    async fn into_reply_rebroadcasts_frames_already_buffered_for_the_stream() {
+        let (client_io, mut server_io) = duplex(1024);
+        let mut client = RawClient::new(client_io);
+        let mut events = client.events();
+        let mut stream = client
+            .send_command_streaming("IDLE", |r| matches!(r, Response::Continue(_)))
+            .await
+            .unwrap();
+
+        let mut buf = [0u8; 64];
+        let _ = server_io.read(&mut buf).await.unwrap();
+        server_io.write_all(b"+ a\r\n+ b\r\n").await.unwrap();
+        assert_eq!(&stream.next_frame().await.unwrap()[..], b"+ a\r\n");
+        let _reply = stream.into_reply();
+
+        let frame = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .expect("a buffered frame was discarded")
+            .unwrap();
+        assert_eq!(&frame[..], b"+ b\r\n");
     }
 
     #[tokio::test]
