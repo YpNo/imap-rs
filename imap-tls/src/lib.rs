@@ -40,6 +40,13 @@ pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 /// `CAPABILITY`, `STARTTLS`).
 pub const DEFAULT_PRE_TLS_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Largest single response, in bytes, accepted on the cleartext connection
+/// before the STARTTLS upgrade. The greeting, `CAPABILITY` and `STARTTLS`
+/// replies are short lines and no literal is legitimate there, so a frame
+/// that reaches this size is treated as hostile and fails with
+/// [`ClientError::FrameTooLarge`] instead of growing the buffer.
+pub const MAX_PRE_TLS_FRAME: usize = 64 * 1024;
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -291,6 +298,9 @@ async fn write_all_with_timeout<S: AsyncWrite + Unpin>(
 
 /// Read enough bytes from `stream` (re-using `buf`) to parse one complete
 /// IMAP frame, then return that frame's bytes (split out of `buf`).
+///
+/// Returns [`ClientError::FrameTooLarge`] once an unfinished frame reaches
+/// [`MAX_PRE_TLS_FRAME`]; reads are sized so `buf` never grows past it.
 async fn read_one_frame<S: AsyncRead + Unpin>(
     stream: &mut S,
     buf: &mut BytesMut,
@@ -313,11 +323,20 @@ async fn read_one_frame<S: AsyncRead + Unpin>(
                 }
             }
         }
+        // Everything buffered is one unfinished frame: refuse to grow it
+        // past the ceiling, and never read more than the room left.
+        let room = MAX_PRE_TLS_FRAME.saturating_sub(buf.len());
+        if room == 0 {
+            return Err(ClientError::FrameTooLarge {
+                max: MAX_PRE_TLS_FRAME,
+            });
+        }
         let now = tokio::time::Instant::now();
         if now >= deadline {
             return Err(ClientError::Timeout);
         }
-        let n = tokio::time::timeout(deadline - now, stream.read_buf(buf))
+        let mut limited = (&mut *stream).take(room as u64);
+        let n = tokio::time::timeout(deadline - now, limited.read_buf(buf))
             .await
             .map_err(|_| ClientError::Timeout)?
             .map_err(ClientError::Io)?;
@@ -417,6 +436,45 @@ mod tests {
         let r = drive_starttls_exchange(&mut client_io, Duration::from_secs(5)).await;
         assert!(matches!(r, Err(ClientError::CommandFailed(_))));
         server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_one_frame_unterminated_greeting_fails_at_cap() {
+        // A greeting that never ends its line must not grow the cleartext
+        // buffer past the pre-TLS ceiling while the timeout runs.
+        let (mut client_io, mut server_io) = duplex(64 * 1024);
+        let server_task = tokio::spawn(async move {
+            let _ = server_io.write_all(b"* OK ").await;
+            let chunk = vec![b'a'; 8 * 1024];
+            // Stop once the client hangs up; ignore the resulting error.
+            while server_io.write_all(&chunk).await.is_ok() {}
+        });
+
+        let mut buf = BytesMut::new();
+        let r = read_one_frame(&mut client_io, &mut buf, Duration::from_secs(5)).await;
+
+        assert!(
+            matches!(r, Err(ClientError::FrameTooLarge { max }) if max == MAX_PRE_TLS_FRAME),
+            "got {r:?}"
+        );
+        assert!(buf.len() <= MAX_PRE_TLS_FRAME);
+        drop(client_io);
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_one_frame_frame_at_cap_is_accepted() {
+        let (mut client_io, mut server_io) = duplex(MAX_PRE_TLS_FRAME * 2);
+        let mut frame = b"* OK ".to_vec();
+        frame.resize(MAX_PRE_TLS_FRAME - 2, b'a');
+        frame.extend_from_slice(b"\r\n");
+        server_io.write_all(&frame).await.unwrap();
+
+        let mut buf = BytesMut::new();
+        let got = read_one_frame(&mut client_io, &mut buf, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(got.len(), MAX_PRE_TLS_FRAME);
     }
 
     #[tokio::test]
