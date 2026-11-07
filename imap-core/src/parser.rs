@@ -15,6 +15,9 @@
 //! [`MAX_ITEMS_PER_RESPONSE`], because each one costs more memory than the
 //! bytes it was parsed from.
 //!
+//! [`MAX_LITERAL_SIZE`]: crate::parser::MAX_LITERAL_SIZE
+//! [`MAX_ITEMS_PER_RESPONSE`]: crate::parser::MAX_ITEMS_PER_RESPONSE
+//!
 //! ## Limitations
 //!
 //! Quoted-string escape sequences (`\\`, `\"`) are not unescaped — the raw
