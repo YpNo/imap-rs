@@ -4,6 +4,12 @@
 //! the parser's zero-copy contract. Quoted-string escape sequences (`\\`,
 //! `\"`) are NOT processed — the raw bytes are returned. Callers that need
 //! unescaped values should post-process.
+//!
+//! `Debug` on [`FetchAttribute`] prints the length of message content
+//! (bodies, headers, envelopes, body structures), never the content itself,
+//! so logging a response cannot leak an e-mail or the codes it carries.
+
+use core::fmt;
 
 /// A single parsed server response line.
 #[derive(Debug, PartialEq, Eq)]
@@ -143,7 +149,10 @@ pub enum StatusItem {
 }
 
 /// A single attribute returned in a `FETCH` data response.
-#[derive(Debug, PartialEq, Eq)]
+///
+/// Its `Debug` output replaces message content with its length; see the
+/// [module docs](crate::ast).
+#[derive(PartialEq, Eq)]
 pub enum FetchAttribute<'a> {
     /// `FLAGS` — the flags set on the message.
     Flags(Vec<&'a str>),
@@ -176,6 +185,47 @@ pub enum FetchAttribute<'a> {
     Uid(u32),
 }
 
+/// `Debug` stand-in for message content: its length, never its bytes.
+struct ByteCount(usize);
+
+impl fmt::Debug for ByteCount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<{} bytes>", self.0)
+    }
+}
+
+/// Debug-print a content-carrying tuple variant as `Name(<N bytes>)`.
+fn content(f: &mut fmt::Formatter<'_>, name: &str, bytes: &[u8]) -> fmt::Result {
+    f.debug_tuple(name).field(&ByteCount(bytes.len())).finish()
+}
+
+impl fmt::Debug for FetchAttribute<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Flags(flags) => f.debug_tuple("Flags").field(flags).finish(),
+            Self::InternalDate(date) => f.debug_tuple("InternalDate").field(date).finish(),
+            Self::Rfc822Size(size) => f.debug_tuple("Rfc822Size").field(size).finish(),
+            Self::Rfc822(b) => content(f, "Rfc822", b),
+            Self::Rfc822Header(b) => content(f, "Rfc822Header", b),
+            Self::Rfc822Text(b) => content(f, "Rfc822Text", b),
+            Self::Envelope(b) => content(f, "Envelope", b),
+            Self::Body(b) => content(f, "Body", b),
+            Self::BodyStructure(b) => content(f, "BodyStructure", b),
+            Self::BodySection {
+                section,
+                origin,
+                data,
+            } => f
+                .debug_struct("BodySection")
+                .field("section", section)
+                .field("origin", origin)
+                .field("data", &data.map(|d| ByteCount(d.len())))
+                .finish(),
+            Self::Uid(uid) => f.debug_tuple("Uid").field(uid).finish(),
+        }
+    }
+}
+
 /// A command-continuation request (`+ [code] text`).
 #[derive(Debug, PartialEq, Eq)]
 pub struct ContinueReq<'a> {
@@ -183,4 +233,64 @@ pub struct ContinueReq<'a> {
     pub code: Option<ResponseCode<'a>>,
     /// Human-readable continuation text.
     pub text: &'a str,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BODY: &[u8] = b"Subject: your code\r\n\r\nOTP 483920";
+
+    fn assert_redacted(rendered: &str) {
+        assert!(
+            !rendered.contains("483920"),
+            "payload text leaked: {rendered}"
+        );
+        // Derived Debug prints a byte slice as decimal values: `[83, 117, …]`.
+        assert!(
+            !rendered.contains("83, 117"),
+            "payload bytes leaked: {rendered}"
+        );
+        assert!(
+            rendered.contains(&format!("<{} bytes>", BODY.len())),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn fetch_attribute_debug_prints_payload_length_not_content() {
+        for attr in [
+            FetchAttribute::Rfc822(BODY),
+            FetchAttribute::Rfc822Header(BODY),
+            FetchAttribute::Rfc822Text(BODY),
+            FetchAttribute::Envelope(BODY),
+            FetchAttribute::Body(BODY),
+            FetchAttribute::BodyStructure(BODY),
+        ] {
+            assert_redacted(&format!("{attr:?}"));
+        }
+    }
+
+    #[test]
+    fn body_section_debug_keeps_section_and_origin_but_not_data() {
+        let attr = FetchAttribute::BodySection {
+            section: Some("TEXT"),
+            origin: Some(0),
+            data: Some(BODY),
+        };
+        let rendered = format!("{attr:?}");
+        assert_redacted(&rendered);
+        assert!(rendered.contains("TEXT") && rendered.contains("origin: Some(0)"));
+    }
+
+    #[test]
+    fn fetch_response_debug_redacts_nested_attributes() {
+        let response = Response::Data(DataResponse::Fetch {
+            seq: 1,
+            attributes: vec![FetchAttribute::Uid(9), FetchAttribute::Rfc822(BODY)],
+        });
+        let rendered = format!("{response:?}");
+        assert_redacted(&rendered);
+        assert!(rendered.contains("Uid(9)"));
+    }
 }
