@@ -34,6 +34,14 @@ pub enum ParseError {
         /// Maximum literal length the parser accepts, in octets.
         max: usize,
     },
+    /// A response holds more list elements (flags, capabilities, FETCH
+    /// attributes, STATUS items) than the parser's per-response budget.
+    /// Used as a DoS guard: each element costs more memory than its bytes.
+    #[error("response has more than {max} list items")]
+    TooManyItems {
+        /// Maximum number of list elements accepted in one response.
+        max: usize,
+    },
     /// Well-formed bytes that nonetheless violate the response grammar.
     /// The value is a human-readable description of the violation.
     #[error("Malformed response: {0}")]

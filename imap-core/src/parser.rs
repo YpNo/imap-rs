@@ -11,7 +11,9 @@
 //! Literals (`{n}\r\n`) are capped at [`MAX_LITERAL_SIZE`] to prevent a
 //! hostile server from forcing the client to allocate an arbitrarily large
 //! buffer. The cap applies to a single literal; pipelined responses are
-//! independent.
+//! independent. List elements are capped per response at
+//! [`MAX_ITEMS_PER_RESPONSE`], because each one costs more memory than the
+//! bytes it was parsed from.
 //!
 //! ## Limitations
 //!
@@ -29,6 +31,17 @@ use crate::error::ParseError;
 /// A server attempting to send a larger literal causes the parser to fail
 /// with [`ParseError::LiteralTooLarge`] before any buffer growth occurs.
 pub const MAX_LITERAL_SIZE: usize = 64 * 1024 * 1024;
+
+/// Hard cap on the list elements (flags, capabilities, FETCH attributes,
+/// STATUS items) in one response, counted across every list it contains.
+///
+/// Each element is a 16-byte or larger AST value built from as little as two
+/// input bytes, so without this cap a maximal frame of `* CAPABILITY a a a …`
+/// would cost about eight times its size. A response over the cap fails with
+/// [`ParseError::TooManyItems`]. `SEARCH` results are not counted: each `u32`
+/// costs at most twice its wire bytes, and very large mailboxes legitimately
+/// return millions of them.
+pub const MAX_ITEMS_PER_RESPONSE: usize = 64 * 1024;
 
 /// Result returned by the parser API.
 pub type IResult<'a, T> = Result<(&'a [u8], T), ParseError>;
@@ -51,11 +64,32 @@ pub fn parse_response(input: &[u8]) -> IResult<'_, Response<'_>> {
 struct Parser<'a> {
     input: &'a [u8],
     pos: usize,
+    /// List elements this response may still allocate
+    /// (see [`MAX_ITEMS_PER_RESPONSE`]).
+    items_left: usize,
 }
 
 impl<'a> Parser<'a> {
     fn new(input: &'a [u8]) -> Self {
-        Self { input, pos: 0 }
+        Self {
+            input,
+            pos: 0,
+            items_left: MAX_ITEMS_PER_RESPONSE,
+        }
+    }
+
+    /// Append `item` to `list`, charging it against the per-response item
+    /// budget. Called after the item parsed, so a truncated frame that is
+    /// still within budget keeps reporting `Incomplete`.
+    fn push_item<T>(&mut self, list: &mut Vec<T>, item: T) -> Result<(), ParseError> {
+        self.items_left = self
+            .items_left
+            .checked_sub(1)
+            .ok_or(ParseError::TooManyItems {
+                max: MAX_ITEMS_PER_RESPONSE,
+            })?;
+        list.push(item);
+        Ok(())
     }
 
     fn remaining(&self) -> &'a [u8] {
@@ -321,7 +355,8 @@ impl<'a> Parser<'a> {
             return Ok(items);
         }
         loop {
-            items.push(self.parse_flag_or_atom()?);
+            let item = self.parse_flag_or_atom()?;
+            self.push_item(&mut items, item)?;
             match self.peek()? {
                 b' ' => {
                     self.pos += 1;
@@ -576,7 +611,8 @@ impl<'a> Parser<'a> {
             _ if atom.eq_ignore_ascii_case("CAPABILITY") => {
                 let mut caps = Vec::new();
                 while self.try_consume_byte(b' ') {
-                    caps.push(self.parse_atom()?);
+                    let cap = self.parse_atom()?;
+                    self.push_item(&mut caps, cap)?;
                 }
                 ResponseCode::Capability(caps)
             }
@@ -678,7 +714,8 @@ impl<'a> Parser<'a> {
         let resp = if name.eq_ignore_ascii_case("CAPABILITY") {
             let mut caps = Vec::new();
             while self.try_consume_byte(b' ') {
-                caps.push(self.parse_atom()?);
+                let cap = self.parse_atom()?;
+                self.push_item(&mut caps, cap)?;
             }
             DataResponse::Capability(caps)
         } else if name.eq_ignore_ascii_case("LIST") {
@@ -750,7 +787,7 @@ impl<'a> Parser<'a> {
             let key = self.parse_atom()?;
             self.consume_sp()?;
             let value = self.parse_number()?;
-            items.push(if key.eq_ignore_ascii_case("MESSAGES") {
+            let item = if key.eq_ignore_ascii_case("MESSAGES") {
                 StatusItem::Messages(value)
             } else if key.eq_ignore_ascii_case("RECENT") {
                 StatusItem::Recent(value)
@@ -762,7 +799,8 @@ impl<'a> Parser<'a> {
                 StatusItem::Unseen(value)
             } else {
                 StatusItem::Other(value)
-            });
+            };
+            self.push_item(&mut items, item)?;
             match self.peek()? {
                 b' ' => {
                     self.pos += 1;
@@ -787,7 +825,8 @@ impl<'a> Parser<'a> {
             return Ok(atts);
         }
         loop {
-            atts.push(self.parse_one_fetch_att()?);
+            let att = self.parse_one_fetch_att()?;
+            self.push_item(&mut atts, att)?;
             match self.peek()? {
                 b' ' => {
                     self.pos += 1;
@@ -981,6 +1020,57 @@ mod tests {
         let (rem, r) = parse_response(input).unwrap();
         assert_eq!(rem.len(), 0, "non-empty remainder for input {:?}", input);
         r
+    }
+
+    // --- Item budget -------------------------------------------------
+
+    fn atoms(n: usize) -> String {
+        " a".repeat(n)
+    }
+
+    #[test]
+    fn capability_at_item_budget_parses() {
+        let frame = format!("* CAPABILITY{}\r\n", atoms(MAX_ITEMS_PER_RESPONSE));
+        let Response::Data(DataResponse::Capability(caps)) = ok(frame.as_bytes()) else {
+            panic!("expected CAPABILITY");
+        };
+        assert_eq!(caps.len(), MAX_ITEMS_PER_RESPONSE);
+    }
+
+    #[test]
+    fn capability_over_item_budget_is_rejected() {
+        let frame = format!("* CAPABILITY{}\r\n", atoms(MAX_ITEMS_PER_RESPONSE + 1));
+        assert_eq!(
+            parse_response(frame.as_bytes()).unwrap_err(),
+            ParseError::TooManyItems {
+                max: MAX_ITEMS_PER_RESPONSE
+            }
+        );
+    }
+
+    #[test]
+    fn nested_lists_share_one_item_budget() {
+        // Two FETCH attributes whose flag lists are each under the budget
+        // but together exceed it: the budget is per response, not per list.
+        let half = MAX_ITEMS_PER_RESPONSE / 2;
+        let list = format!("({})", atoms(half).trim_start());
+        let frame = format!("* 1 FETCH (FLAGS {list} FLAGS {list})\r\n");
+        assert_eq!(
+            parse_response(frame.as_bytes()).unwrap_err(),
+            ParseError::TooManyItems {
+                max: MAX_ITEMS_PER_RESPONSE
+            }
+        );
+    }
+
+    #[test]
+    fn search_ids_are_not_charged_against_item_budget() {
+        let ids = " 1".repeat(MAX_ITEMS_PER_RESPONSE + 1);
+        let frame = format!("* SEARCH{ids}\r\n");
+        let Response::Data(DataResponse::Search(found)) = ok(frame.as_bytes()) else {
+            panic!("expected SEARCH");
+        };
+        assert_eq!(found.len(), MAX_ITEMS_PER_RESPONSE + 1);
     }
 
     // --- Continue ----------------------------------------------------
