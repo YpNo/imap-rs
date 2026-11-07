@@ -70,6 +70,8 @@ jobs:
       release: ${{ env.IS_RELEASE_PR == 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Detect changes outside documentation
         id: filter
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -95,6 +97,8 @@ jobs:
     if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Rust toolchain
         uses: ./.github/actions/rust-toolchain
         with:
@@ -109,6 +113,8 @@ jobs:
     if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Rust toolchain
         uses: ./.github/actions/rust-toolchain
         with:
@@ -117,7 +123,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Run cargo clippy
         # We allow dead code during development but deny other warnings
-        run: cargo clippy --all-targets --all-features -- -D warnings -A dead_code
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -A dead_code
 
   test:
     name: Run Tests
@@ -126,12 +132,16 @@ jobs:
     if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Rust toolchain
         uses: ./.github/actions/rust-toolchain
       - name: Rust Cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Run cargo test
-        run: cargo test --all-features
+        # --workspace: the root is itself a package, so without it only the
+        # umbrella crate's tests run.
+        run: cargo test --workspace --all-features --locked
 
   msrv:
     name: MSRV (Rust 1.95.0)
@@ -144,6 +154,8 @@ jobs:
       RUSTUP_TOOLCHAIN: 1.95.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Rust 1.95.0 (rust-version in Cargo.toml)
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -161,6 +173,8 @@ jobs:
     if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Rust toolchain
         uses: ./.github/actions/rust-toolchain
       - name: Rust Cache
@@ -177,6 +191,8 @@ jobs:
     if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Rust toolchain
         uses: ./.github/actions/rust-toolchain
       - name: Rust Cache
@@ -184,7 +200,7 @@ jobs:
       - name: Type-check fuzz target against current parser API
         # Full `cargo fuzz` requires nightly + sanitizers; here we only
         # gate that the fuzz target still compiles against `imap-core`.
-        run: cargo check --manifest-path imap-core/fuzz/Cargo.toml
+        run: cargo check --manifest-path imap-core/fuzz/Cargo.toml --locked
 
   security:
     name: Security & License Audit
@@ -193,6 +209,8 @@ jobs:
     if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Run cargo-deny
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
@@ -206,6 +224,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@e805d875275f728fac1885b413934be6d7c63f65 # v8.4.1
@@ -219,12 +238,14 @@ jobs:
     if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Rust toolchain
         uses: ./.github/actions/rust-toolchain
       - name: Rust Cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Check Documentation
-        run: cargo doc --no-deps --all-features
+        run: cargo doc --workspace --no-deps --all-features --locked
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -237,6 +258,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Rust toolchain
         uses: ./.github/actions/rust-toolchain
       - name: Rust Cache
@@ -248,12 +271,16 @@ jobs:
           tool: cargo-tarpaulin@0.37.6
 
       - name: Run cargo-tarpaulin
-        run: cargo tarpaulin --all-features --workspace --timeout 120 --out xml
+        # --fail-under enforces the 85 % floor in-job, so the gate does not
+        # depend on the Codecov upload succeeding.
+        run: cargo tarpaulin --all-features --workspace --timeout 120 --out xml --locked --fail-under 85
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
-          fail_ci_if_error: false
+          # Fork pull requests get no CODECOV_TOKEN, so only same-repository
+          # runs can be required to upload.
+          fail_ci_if_error: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
           token: ${{ secrets.CODECOV_TOKEN }}
 
   release-check:
@@ -263,6 +290,8 @@ jobs:
     if: needs.changes.outputs.release == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Rust toolchain
         uses: ./.github/actions/rust-toolchain
       - name: Rust Cache

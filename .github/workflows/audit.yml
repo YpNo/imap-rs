@@ -9,7 +9,8 @@ name: Security audit
 #   ------------------+---------------------------------------------------------
 #   schedule (weekly) | security (cargo-deny: advisories, bans, licenses, sources)
 #                     | audit (cargo-audit: RustSec advisories, yanked and
-#                     |        unmaintained crates, denied as warnings)
+#                     |        unmaintained crates, denied as warnings, for
+#                     |        the root and the fuzz lockfiles)
 #   workflow_dispatch | the same two, on demand
 #
 # cargo-deny also runs on every pull request (ci.yml) so a new dependency is
@@ -29,6 +30,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Run cargo-deny
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
@@ -39,6 +42,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install cargo-audit
         # rustsec/audit-check would open an issue per finding, but its only
         # release (v2.0.0) still runs on Node 20, which GitHub is retiring, and
@@ -51,3 +56,7 @@ jobs:
         # Called as the binary, not as a cargo subcommand, so the job does not
         # need a Rust toolchain at all.
         run: cargo-audit audit --deny warnings
+      - name: Run cargo audit on the fuzz workspace
+        # imap-core/fuzz is a separate workspace with its own lockfile, built
+        # in CI but outside the root Cargo.lock that the step above reads.
+        run: cargo-audit audit --deny warnings --file imap-core/fuzz/Cargo.lock

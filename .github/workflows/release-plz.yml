@@ -6,7 +6,8 @@ name: Release-plz
 # imap-rs-tls -> imap-rs.
 #
 # Required repository secret:
-#   CARGO_REGISTRY_TOKEN  — a crates.io API token with publish scope.
+#   CARGO_REGISTRY_TOKEN  — a crates.io API token with publish scope, used
+#                           only by the release job.
 #
 # Note: PRs opened by the default GITHUB_TOKEN do NOT trigger other workflows
 # (e.g. CI). To run CI on the release PR, create a fine-grained PAT or install
@@ -36,6 +37,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: Install Rust toolchain
         uses: ./.github/actions/rust-toolchain
@@ -46,8 +48,11 @@ jobs:
         with:
           command: release-pr
         env:
+          # No CARGO_REGISTRY_TOKEN here: opening the PR only reads the public
+          # index, while this job builds every dependency (build scripts and
+          # proc-macros) for cargo-semver-checks. The publish token stays in
+          # the release job, the only one that publishes.
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   # Publish any crate whose version was bumped on main (i.e. when a release PR
   # is merged), then create the matching GitHub release.
@@ -62,6 +67,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: Install Rust toolchain
         uses: ./.github/actions/rust-toolchain
