@@ -1,10 +1,47 @@
 name: Rust CI
 
+# Trigger matrix. Each job runs once per meaningful event; the `changes` job
+# computes the routing and every other job keys its `if:` on one output.
+#
+#   event                        | jobs
+#   -----------------------------+------------------------------------------------
+#   pull_request, normal PR that | format, clippy, msrv, test, examples,
+#   touches non-docs files       | fuzz-build, doc, security, coverage, sonarqube
+#   pull_request, docs only      | changes and ci-result only. Every Rust job is
+#   (**.md, docs/, LICENSE,      | skipped, which GitHub counts as passed for the
+#   assets/, .agents/, .claude/) | required checks.
+#   pull_request from a          | release-check only (cargo package --workspace
+#   release-plz-* branch of this | --locked). The PR bumps versions and changelogs;
+#   repo, opened by the owner    | packaging is the only thing that can break, and
+#                                | the code was fully tested when it was merged.
+#   push to main                 | coverage and sonarqube only. The PR already ran
+#                                | the full gate on this tree; these two still run
+#                                | because Codecov and SonarCloud need a main-
+#                                | branch data point to compare the next PR with.
+#                                | Tarpaulin executes the whole test suite, so
+#                                | coverage doubles as the post-merge smoke test.
+#   schedule (weekly)            | nothing here; see audit.yml (cargo-deny and
+#                                | cargo-audit against the lockfile only).
+#
+# Caching: every job keeps its own Swatinem/rust-cache key. The jobs run in
+# parallel with different build profiles (check metadata for clippy, dev for
+# test and examples, rustdoc for doc, instrumented for tarpaulin, another
+# compiler for msrv), so a shared key cannot hand one job's artifacts to the
+# next, and a cold `cargo check` of this workspace takes under a minute, less
+# than moving a target directory between jobs would.
+
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [ "main", "master"]
-  schedule:
-    - cron: '0 0 * * 0' # Run weekly on Sunday for security audits
+
+# One run per pull request (keyed on its number) or per branch. A new push to
+# a PR cancels the superseded run; pushes to main queue instead, so coverage
+# and Sonar keep a data point for every merged commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,15 +50,58 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Route jobs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # paths-filter lists a pull request's files via the API
+    env:
+      # The release PR is the one release-plz opens from a release-plz-* branch
+      # of this repository with the owner's token. The branch name alone is not
+      # enough: a fork branch named that way must not skip the quality gate.
+      IS_RELEASE_PR: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-plz-') && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner }}
+    outputs:
+      # Full quality gate: a normal pull request that touches more than documentation.
+      quality: ${{ github.event_name == 'pull_request' && env.IS_RELEASE_PR != 'true' && steps.filter.outputs.rust == 'true' }}
+      # Coverage and Sonar: the same pull requests, plus every push to main.
+      metrics: ${{ env.IS_RELEASE_PR != 'true' && steps.filter.outputs.rust == 'true' }}
+      # release-plz's version-bump PR: packaging check only.
+      release: ${{ env.IS_RELEASE_PR == 'true' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Detect changes outside documentation
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          # A file counts when it matches '**' and none of the exclusions, so
+          # anything not listed below (a new fixture, a config file) still
+          # triggers the Rust jobs. Only pure documentation is filtered out.
+          predicate-quantifier: some-with-excludes
+          filters: |
+            rust:
+              - '**'
+              - '!**/*.md'
+              - '!docs/**'
+              - '!LICENSE*'
+              - '!assets/**'
+              - '!.agents/**'
+              - '!.claude/**'
+
   format:
     name: Check Formatting
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
-          toolchain: 1.99.1
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+        with:
           components: rustfmt
       - name: Run cargo fmt
         run: cargo fmt --all -- --check
@@ -29,47 +109,74 @@ jobs:
   clippy:
     name: Lint with Clippy
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
-          toolchain: 1.99.1
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+        with:
           components: clippy
       - name: Rust Cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Run cargo clippy
         # We allow dead code during development but deny other warnings
-        run: cargo clippy --all-targets --all-features -- -D warnings -A dead_code
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -A dead_code
 
   test:
     name: Run Tests
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # We need cmake, nasm, and go for boring-sys (BoringSSL build)
-      - name: Install Dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libclang-dev nasm golang-go chromium-browser
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
-          toolchain: 1.99.1
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: ./.github/actions/rust-toolchain
       - name: Rust Cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Run cargo test
-        run: cargo test --all-features
+        # --workspace: the root is itself a package, so without it only the
+        # umbrella crate's tests run.
+        run: cargo test --workspace --all-features --locked
+
+  msrv:
+    name: MSRV (Rust 1.95.0)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.quality == 'true'
+    env:
+      # rustup gives rust-toolchain.toml (the day-to-day pin) precedence over
+      # the default toolchain the action sets, so force the MSRV explicitly.
+      RUSTUP_TOOLCHAIN: 1.95.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust 1.95.0 (rust-version in Cargo.toml)
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: 1.95.0
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Check the workspace on the declared MSRV
+        # Keep in sync with `rust-version` in Cargo.toml.
+        run: cargo check --workspace --all-features --all-targets --locked
 
   examples:
     name: Build Examples
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
-          toolchain: 1.99.1
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: ./.github/actions/rust-toolchain
       - name: Rust Cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build all examples
@@ -80,24 +187,30 @@ jobs:
   fuzz-build:
     name: Fuzz Target Builds
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
-          toolchain: 1.99.1
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: ./.github/actions/rust-toolchain
       - name: Rust Cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Type-check fuzz target against current parser API
         # Full `cargo fuzz` requires nightly + sanitizers; here we only
         # gate that the fuzz target still compiles against `imap-core`.
-        run: cargo check --manifest-path imap-core/fuzz/Cargo.toml
+        run: cargo check --manifest-path imap-core/fuzz/Cargo.toml --locked
 
   security:
     name: Security & License Audit
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Run cargo-deny
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
@@ -106,9 +219,12 @@ jobs:
   sonarqube:
     name: SonarQube
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.metrics == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@e805d875275f728fac1885b413934be6d7c63f65 # v8.4.1
@@ -118,49 +234,102 @@ jobs:
   doc:
     name: Documentation Check
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.quality == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
-          toolchain: 1.99.1
-      - name: Install Dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential nasm golang-go
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: ./.github/actions/rust-toolchain
       - name: Rust Cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Check Documentation
-        run: cargo doc --no-deps --all-features
+        run: cargo doc --workspace --no-deps --all-features --locked
         env:
           RUSTDOCFLAGS: -D warnings
 
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.metrics == 'true'
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # Dependencies for building boring-sys
-      - name: Install Dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libclang-dev nasm golang-go chromium-browser
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
-          toolchain: 1.99.1
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: ./.github/actions/rust-toolchain
       - name: Rust Cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
-      - name: Install cargo-tarpaulin (binary)
-        run: |
-          curl -s https://api.github.com/repos/xd009642/tarpaulin/releases/latest | grep browser_download_url | grep x86_64-unknown-linux-musl | cut -d '"' -f 4 | xargs curl -L | tar xz -C /usr/local/bin
+      - name: Install cargo-tarpaulin
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-tarpaulin@0.37.6
 
       - name: Run cargo-tarpaulin
-        run: cargo tarpaulin --all-features --workspace --timeout 120 --out xml
+        # --fail-under enforces the 85 % floor in-job, so the gate does not
+        # depend on the Codecov upload succeeding.
+        run: cargo tarpaulin --all-features --workspace --timeout 120 --out xml --locked --fail-under 85
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
-          fail_ci_if_error: false
+          # Fork pull requests get no CODECOV_TOKEN, so only same-repository
+          # runs can be required to upload.
+          fail_ci_if_error: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  release-check:
+    name: Release PR packaging check
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.release == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Package every crate as crates.io will see it
+        # Packages the workspace in dependency order against a temporary
+        # registry and builds each .crate from its own contents, which is what
+        # `cargo publish` does in the release job. Catches files missing from
+        # the package, a stale lockfile entry and intra-workspace version
+        # mismatches before the bump is merged.
+        run: cargo package --workspace --locked
+
+  # Single always-reported check for branch protection: green when every job
+  # above succeeded or was skipped by the routing, red on any failure or
+  # cancellation. Skipped required jobs already count as passed on GitHub;
+  # this job exists so protection can depend on one stable name.
+  ci-result:
+    name: CI result
+    runs-on: ubuntu-latest
+    needs:
+      - changes
+      - format
+      - clippy
+      - msrv
+      - test
+      - examples
+      - fuzz-build
+      - security
+      - sonarqube
+      - doc
+      - coverage
+      - release-check
+    if: always()
+    steps:
+      - name: Fail if any job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          exit 1
