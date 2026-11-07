@@ -7,7 +7,7 @@
 - **Domain**: Email Protocol (IMAP4rev1/rev2)
 - **Primary adapters (inbound)**: Library API (`Session<State, Transport>`)
 - **Driven adapters (outbound)**: TCP Sockets, `rustls` (via `tokio-rustls`)
-- **MSRV**: 1.95.0 (pinned for consistent `trybuild` diagnostics)
+- **MSRV**: 1.95.0 (`rust-version` in `Cargo.toml`), the supported minimum, checked by the `msrv` CI job. Day-to-day builds and the `trybuild` UI diagnostics are pinned by `rust-toolchain.toml` (currently 1.99.1).
 - **Async runtime**: tokio
 
 ---
@@ -48,7 +48,7 @@
 ## Architecture Decision Records
 
 - **ADR-001**: **No-FFI TLS** — Using `rustls` exclusively to avoid vulnerabilities associated with C-based TLS libraries (OpenSSL).
-- **ADR-002**: **Type-State Sessions** — Using the Rust type system to enforce valid protocol transitions (e.g., no LOGIN over PlainText).
+- **ADR-002**: **Type-State Sessions** — Using the Rust type system to enforce valid protocol transitions (e.g., no LOGIN over PlainText). The `Tls` marker is an assertion made by `imap-tls` after a verified handshake, or by callers of `Session::new_tls` under its documented contract; `Session::new` always yields `PlainText`.
 - **ADR-003**: **Zero-Copy Parsing** — The parser uses `&[u8]` references into the network buffer to minimize allocations.
 
 ---

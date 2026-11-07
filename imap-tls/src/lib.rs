@@ -10,8 +10,9 @@
 //!   are NEVER trusted.
 //!
 //! Both entry points enforce a TCP-connect timeout and a TLS-handshake
-//! timeout to prevent slowloris-style hangs. Defaults are 30 s; override
-//! via the `_with_timeouts` variants.
+//! timeout, and STARTTLS also bounds the whole cleartext exchange before
+//! the upgrade, to prevent slowloris-style hangs. Defaults are 30 s;
+//! override via the `_with_timeouts` variants.
 //!
 //! For tests against an in-process TLS endpoint, use
 //! [`handshake_with_connector`] with a custom [`TlsConnector`].
@@ -36,9 +37,16 @@ use imap_core::parser::parse_response;
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Default deadline for the TLS handshake step.
 pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
-/// Default deadline for any single pre-TLS request/response (greeting,
-/// `CAPABILITY`, `STARTTLS`).
+/// Default deadline for the whole cleartext exchange before a STARTTLS
+/// upgrade (greeting, `CAPABILITY`, `STARTTLS`).
 pub const DEFAULT_PRE_TLS_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Largest single response, in bytes, accepted on the cleartext connection
+/// before the STARTTLS upgrade. The greeting, `CAPABILITY` and `STARTTLS`
+/// replies are short lines and no literal is legitimate there, so a frame
+/// that reaches this size is treated as hostile and fails with
+/// [`ClientError::FrameTooLarge`] instead of growing the buffer.
+pub const MAX_PRE_TLS_FRAME: usize = 64 * 1024;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -194,31 +202,47 @@ where
         });
 
     if !got_greeting_caps {
-        let cap_resp = raw.execute_command("CAPABILITY").await?;
+        let cap_resp = raw
+            .execute_streaming(
+                "CAPABILITY",
+                Capabilities::is_capability_response,
+                |frame| {
+                    if let Ok((_, response)) = parse_response(frame) {
+                        capabilities.try_update_from(&response);
+                    }
+                },
+            )
+            .await?;
+        // A `[CAPABILITY …]` code on the tagged OK, if any, is the latest.
         if let Ok((_, response)) = parse_response(&cap_resp) {
             capabilities.try_update_from(&response);
         }
-        // The `* CAPABILITY …` data line was broadcast — drain it to
-        // pick up the actual capability list.
-        while let Ok(event) = events.try_recv() {
-            if let Ok((_, response)) = parse_response(&event)
-                && capabilities.try_update_from(&response)
-            {
-                break;
-            }
-        }
     }
 
-    Ok(Session::new(raw, capabilities))
+    // The handshake above verified the certificate, and these capabilities
+    // were read inside the encrypted channel: the `new_tls` contract holds.
+    Ok(Session::new_tls(raw, capabilities))
 }
 
 /// Read the initial greeting, run a `CAPABILITY` round-trip, verify the
 /// server advertised STARTTLS, then issue `STARTTLS` and await its tagged
 /// `OK`. The stream is now ready for a TLS handshake.
+///
+/// `pre_tls_timeout` bounds the whole exchange, so a server cannot keep it
+/// open by trickling untagged lines.
 async fn drive_starttls_exchange<S>(
     stream: &mut S,
     pre_tls_timeout: Duration,
 ) -> Result<(), ClientError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    tokio::time::timeout(pre_tls_timeout, starttls_steps(stream, pre_tls_timeout))
+        .await
+        .map_err(|_| ClientError::Timeout)?
+}
+
+async fn starttls_steps<S>(stream: &mut S, pre_tls_timeout: Duration) -> Result<(), ClientError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -237,7 +261,7 @@ where
             match &response {
                 imap_core::ast::Response::Status(s) if s.tag == Some("T0001") => {
                     if !matches!(s.status, imap_core::ast::Status::Ok) {
-                        return Err(ClientError::CommandFailed(format!(
+                        return Err(ClientError::command_failed(&format!(
                             "CAPABILITY failed: {}",
                             s.text
                         )));
@@ -267,10 +291,17 @@ where
             && s.tag == Some("T0002")
         {
             if !matches!(s.status, imap_core::ast::Status::Ok) {
-                return Err(ClientError::CommandFailed(format!(
+                return Err(ClientError::command_failed(&format!(
                     "STARTTLS rejected: {}",
                     s.text
                 )));
+            }
+            // The client speaks first in TLS, so nothing may follow the OK.
+            // Bytes here are an injection attempt (CVE-2011-0411 class).
+            if !buf.is_empty() {
+                return Err(ClientError::CommandFailed(
+                    "server sent cleartext data after STARTTLS OK".into(),
+                ));
             }
             return Ok(());
         }
@@ -291,6 +322,9 @@ async fn write_all_with_timeout<S: AsyncWrite + Unpin>(
 
 /// Read enough bytes from `stream` (re-using `buf`) to parse one complete
 /// IMAP frame, then return that frame's bytes (split out of `buf`).
+///
+/// Returns [`ClientError::FrameTooLarge`] once an unfinished frame reaches
+/// [`MAX_PRE_TLS_FRAME`]; reads are sized so `buf` never grows past it.
 async fn read_one_frame<S: AsyncRead + Unpin>(
     stream: &mut S,
     buf: &mut BytesMut,
@@ -313,11 +347,20 @@ async fn read_one_frame<S: AsyncRead + Unpin>(
                 }
             }
         }
+        // Everything buffered is one unfinished frame: refuse to grow it
+        // past the ceiling, and never read more than the room left.
+        let room = MAX_PRE_TLS_FRAME.saturating_sub(buf.len());
+        if room == 0 {
+            return Err(ClientError::FrameTooLarge {
+                max: MAX_PRE_TLS_FRAME,
+            });
+        }
         let now = tokio::time::Instant::now();
         if now >= deadline {
             return Err(ClientError::Timeout);
         }
-        let n = tokio::time::timeout(deadline - now, stream.read_buf(buf))
+        let mut limited = (&mut *stream).take(room as u64);
+        let n = tokio::time::timeout(deadline - now, limited.read_buf(buf))
             .await
             .map_err(|_| ClientError::Timeout)?
             .map_err(ClientError::Io)?;
@@ -417,6 +460,97 @@ mod tests {
         let r = drive_starttls_exchange(&mut client_io, Duration::from_secs(5)).await;
         assert!(matches!(r, Err(ClientError::CommandFailed(_))));
         server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_one_frame_unterminated_greeting_fails_at_cap() {
+        // A greeting that never ends its line must not grow the cleartext
+        // buffer past the pre-TLS ceiling while the timeout runs.
+        let (mut client_io, mut server_io) = duplex(64 * 1024);
+        let server_task = tokio::spawn(async move {
+            let _ = server_io.write_all(b"* OK ").await;
+            let chunk = vec![b'a'; 8 * 1024];
+            // Stop once the client hangs up; ignore the resulting error.
+            while server_io.write_all(&chunk).await.is_ok() {}
+        });
+
+        let mut buf = BytesMut::new();
+        let r = read_one_frame(&mut client_io, &mut buf, Duration::from_secs(5)).await;
+
+        assert!(
+            matches!(r, Err(ClientError::FrameTooLarge { max }) if max == MAX_PRE_TLS_FRAME),
+            "got {r:?}"
+        );
+        assert!(buf.len() <= MAX_PRE_TLS_FRAME);
+        drop(client_io);
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_one_frame_frame_at_cap_is_accepted() {
+        let (mut client_io, mut server_io) = duplex(MAX_PRE_TLS_FRAME * 2);
+        let mut frame = b"* OK ".to_vec();
+        frame.resize(MAX_PRE_TLS_FRAME - 2, b'a');
+        frame.extend_from_slice(b"\r\n");
+        server_io.write_all(&frame).await.unwrap();
+
+        let mut buf = BytesMut::new();
+        let got = read_one_frame(&mut client_io, &mut buf, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(got.len(), MAX_PRE_TLS_FRAME);
+    }
+
+    #[tokio::test]
+    async fn starttls_rejects_cleartext_queued_after_the_ok() {
+        // CVE-2011-0411 class: bytes after `OK` arrive before TLS starts and
+        // would otherwise be dropped silently, hiding the injection attempt.
+        let (mut client_io, mut server_io) = duplex(4096);
+        let server_task = tokio::spawn(async move {
+            server_io.write_all(b"* OK ready\r\n").await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = server_io.read(&mut buf).await.unwrap();
+            server_io
+                .write_all(b"* CAPABILITY IMAP4rev2 STARTTLS\r\nT0001 OK done\r\n")
+                .await
+                .unwrap();
+            let _ = server_io.read(&mut buf).await.unwrap();
+            server_io
+                .write_all(b"T0002 OK begin TLS\r\n* OK injected\r\n")
+                .await
+                .unwrap();
+            server_io
+        });
+
+        let r = drive_starttls_exchange(&mut client_io, Duration::from_secs(5)).await;
+        assert!(
+            matches!(&r, Err(ClientError::CommandFailed(m)) if m.contains("after STARTTLS")),
+            "got {r:?}"
+        );
+        let _server_io = server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn starttls_timeout_bounds_the_whole_exchange_not_each_frame() {
+        // One untagged line every 50 ms never trips a per-frame deadline;
+        // the exchange as a whole must still give up.
+        let (mut client_io, mut server_io) = duplex(4096);
+        tokio::spawn(async move {
+            server_io.write_all(b"* OK ready\r\n").await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = server_io.read(&mut buf).await.unwrap();
+            while server_io.write_all(b"* OK still here\r\n").await.is_ok() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        });
+
+        let r = tokio::time::timeout(
+            Duration::from_secs(3),
+            drive_starttls_exchange(&mut client_io, Duration::from_millis(300)),
+        )
+        .await
+        .expect("exchange kept going past its timeout");
+        assert!(matches!(r, Err(ClientError::Timeout)), "got {r:?}");
     }
 
     #[tokio::test]

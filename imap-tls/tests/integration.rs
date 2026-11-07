@@ -232,5 +232,8 @@ async fn test_starttls_full_upgrade_path() {
     // pre-TLS server-asserted set (which had STARTTLS but no IDLE).
     assert!(session.capabilities.imap4rev2);
     assert!(session.capabilities.idle);
+    // STARTTLS was advertised only before the upgrade; seeing it here would
+    // mean pre-TLS capabilities leaked into the session.
+    assert!(!session.capabilities.starttls);
     server_task.await.unwrap();
 }

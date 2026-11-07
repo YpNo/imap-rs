@@ -1,4 +1,9 @@
 //! Builders for IMAP `SEARCH` / `UID SEARCH` criteria.
+//!
+//! Text criteria are rendered as quoted strings with `"` and `\` escaped;
+//! a CR or LF in the text is rejected when the command is sent.
+
+use crate::wire::quote;
 
 /// A single search criterion in an IMAP `SEARCH` command.
 #[derive(Debug, Clone)]
@@ -50,11 +55,11 @@ impl SearchKey {
     /// `SEARCH` command.
     pub fn to_imap_string(&self) -> String {
         match self {
-            SearchKey::From(s) => format!("FROM \"{}\"", s),
-            SearchKey::To(s) => format!("TO \"{}\"", s),
-            SearchKey::Subject(s) => format!("SUBJECT \"{}\"", s),
-            SearchKey::Body(s) => format!("BODY \"{}\"", s),
-            SearchKey::Text(s) => format!("TEXT \"{}\"", s),
+            SearchKey::From(s) => format!("FROM {}", quote(s)),
+            SearchKey::To(s) => format!("TO {}", quote(s)),
+            SearchKey::Subject(s) => format!("SUBJECT {}", quote(s)),
+            SearchKey::Body(s) => format!("BODY {}", quote(s)),
+            SearchKey::Text(s) => format!("TEXT {}", quote(s)),
             SearchKey::All => "ALL".to_string(),
             SearchKey::Answered => "ANSWERED".to_string(),
             SearchKey::Deleted => "DELETED".to_string(),
@@ -119,6 +124,20 @@ impl SearchQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A quote in caller text must stay inside the quoted string instead of
+    /// closing it and appending search keys of the caller's choosing.
+    #[test]
+    fn search_key_with_embedded_quote_is_escaped() {
+        assert_eq!(
+            SearchKey::Subject("x\" OR ALL DELETED".into()).to_imap_string(),
+            "SUBJECT \"x\\\" OR ALL DELETED\""
+        );
+        assert_eq!(
+            SearchKey::From("a\\b".into()).to_imap_string(),
+            "FROM \"a\\\\b\""
+        );
+    }
 
     #[test]
     fn test_search_key_formatting() {

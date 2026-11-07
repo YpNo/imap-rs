@@ -2,16 +2,33 @@
 //!
 //! [`Password`] and [`OAuthToken`] are zeroized on drop and redact their
 //! contents in `Debug` output, so secrets are never wiped late or leaked
-//! through logging.
+//! through logging. The copies the client derives to send them (the quoted
+//! form, the `LOGIN` line, the SASL payload and the bytes queued for the
+//! socket) are wiped on drop too, and sized up front so that no buffer
+//! growth leaves an un-wiped copy behind.
 
 use std::fmt;
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::error::ClientError;
 
 /// Secret string memory-wiped on drop and obfuscated in `Debug` output.
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+#[derive(Clone)]
 pub struct Password(String);
+
+impl Zeroize for Password {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl Drop for Password {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for Password {}
 
 impl Password {
     /// Wrap a plaintext password. The value is zeroized when the
@@ -34,8 +51,10 @@ impl Password {
     /// `NUL`, or any 8-bit byte). Callers facing an 8-bit secret should
     /// use [`Session::authenticate_plain`](crate::session::Session) which
     /// transports the secret as base64 over a SASL exchange.
-    pub fn as_imap_quoted(&self) -> Result<String, ClientError> {
-        imap_quoted(&self.0)
+    ///
+    /// The quoted copy is wiped when dropped, like the password itself.
+    pub fn as_imap_quoted(&self) -> Result<Zeroizing<String>, ClientError> {
+        imap_quoted(&self.0).map(Zeroizing::new)
     }
 }
 
@@ -46,8 +65,22 @@ impl fmt::Debug for Password {
 }
 
 /// Secure wrapper for OAuth bearer tokens.
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+#[derive(Clone)]
 pub struct OAuthToken(String);
+
+impl Zeroize for OAuthToken {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl Drop for OAuthToken {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for OAuthToken {}
 
 impl OAuthToken {
     /// Wrap an OAuth bearer token. The value is zeroized on drop.
@@ -80,21 +113,43 @@ pub(crate) fn imap_quoted(s: &str) -> Result<String, ClientError> {
                 .to_string(),
         ));
     }
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        if c == '"' || c == '\\' {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out.push('"');
-    Ok(out)
+    Ok(crate::wire::quote(s))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeroize::{Zeroize, ZeroizeOnDrop};
+
+    /// Compile-time check that both wrappers keep the `ZeroizeOnDrop` bound
+    /// they used to get from the derive macro.
+    fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
+
+    #[test]
+    fn as_imap_quoted_returns_a_wiped_on_drop_buffer() {
+        let quoted: zeroize::Zeroizing<String> = Password::new("p\"w").as_imap_quoted().unwrap();
+        assert_eq!(quoted.as_str(), "\"p\\\"w\"");
+    }
+
+    #[test]
+    fn credentials_implement_zeroize_on_drop() {
+        assert_zeroize_on_drop::<Password>();
+        assert_zeroize_on_drop::<OAuthToken>();
+    }
+
+    #[test]
+    fn password_zeroize_clears_contents() {
+        let mut pass = Password::new("hunter2");
+        pass.zeroize();
+        assert!(pass.as_str().is_empty());
+    }
+
+    #[test]
+    fn oauth_token_zeroize_clears_contents() {
+        let mut token = OAuthToken::new("ya29.secret");
+        token.zeroize();
+        assert!(token.as_str().is_empty());
+    }
 
     #[test]
     fn test_password_obfuscation() {
@@ -142,6 +197,9 @@ mod tests {
     #[test]
     fn test_password_as_imap_quoted_roundtrip() {
         let p = Password::new("p@ss\"with\\specials");
-        assert_eq!(p.as_imap_quoted().unwrap(), "\"p@ss\\\"with\\\\specials\"");
+        assert_eq!(
+            p.as_imap_quoted().unwrap().as_str(),
+            "\"p@ss\\\"with\\\\specials\""
+        );
     }
 }

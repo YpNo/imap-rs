@@ -10,13 +10,18 @@
 //!
 //! - [`Session`] is type-stated over protocol phase ([`Unauthenticated`],
 //!   [`Authenticated`], [`Selected`]) and transport ([`PlainText`], [`Tls`]),
-//!   so invalid command sequences fail to compile.
+//!   so invalid command sequences fail to compile. The transport marker is
+//!   asserted by whoever builds the session: `imap-rs-tls` does so after a
+//!   verified handshake, and [`Session::new_tls`] states the contract for
+//!   custom transports.
 //! - [`RawClient`] is the lower-level pipelining dispatcher: it routes tagged
-//!   responses back to callers and broadcasts untagged events.
+//!   responses back to callers, streams each command's own untagged data to
+//!   it under backpressure, and broadcasts the rest as shared [`Bytes`].
 //! - Credentials ([`credentials::Password`], [`credentials::OAuthToken`]) are
 //!   zeroized on drop and redacted in `Debug`.
 #![forbid(unsafe_code)]
 
+mod base64;
 pub mod capabilities;
 pub mod client;
 pub mod credentials;
@@ -25,7 +30,11 @@ pub mod flags;
 pub mod idle;
 pub mod search;
 pub mod session;
+mod wire;
 
+/// Shared, cheaply cloned frame bytes, as delivered by
+/// [`RawClient::events`] and [`client::CommandStream`].
+pub use bytes::Bytes;
 pub use capabilities::Capabilities;
 pub use client::RawClient;
 pub use error::ClientError;
@@ -42,7 +51,7 @@ mod tests {
         // We cannot call .fetch() on an Unauthenticated session, and we cannot call login() on a PlainText session!
 
         // let raw = RawClient::new(mock_stream);
-        // let unauth = Session::<Unauthenticated, Tls>::new(raw, Capabilities::default());
+        // let unauth = Session::<Unauthenticated, Tls>::new_tls(raw, Capabilities::default());
         // let auth = unauth.login("user", credentials::Password::new("pass")).await.unwrap();
     }
 }

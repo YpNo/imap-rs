@@ -4,5 +4,4 @@ error[E0599]: no method named `login` found for struct `Session<Unauthenticated,
 11 |     let _ = session.login("user", Password::new("pass")).await;
    |                     ^^^^^ method not found in `Session<Unauthenticated, PlainText>`
    |
-   = note: the method was found for
-           - `Session<Unauthenticated, Tls>`
+   = note: the method was found for `Session<Unauthenticated, Tls>`

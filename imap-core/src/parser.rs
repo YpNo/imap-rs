@@ -11,7 +11,12 @@
 //! Literals (`{n}\r\n`) are capped at [`MAX_LITERAL_SIZE`] to prevent a
 //! hostile server from forcing the client to allocate an arbitrarily large
 //! buffer. The cap applies to a single literal; pipelined responses are
-//! independent.
+//! independent. List elements are capped per response at
+//! [`MAX_ITEMS_PER_RESPONSE`], because each one costs more memory than the
+//! bytes it was parsed from.
+//!
+//! [`MAX_LITERAL_SIZE`]: crate::parser::MAX_LITERAL_SIZE
+//! [`MAX_ITEMS_PER_RESPONSE`]: crate::parser::MAX_ITEMS_PER_RESPONSE
 //!
 //! ## Limitations
 //!
@@ -29,6 +34,17 @@ use crate::error::ParseError;
 /// A server attempting to send a larger literal causes the parser to fail
 /// with [`ParseError::LiteralTooLarge`] before any buffer growth occurs.
 pub const MAX_LITERAL_SIZE: usize = 64 * 1024 * 1024;
+
+/// Hard cap on the list elements (flags, capabilities, FETCH attributes,
+/// STATUS items) in one response, counted across every list it contains.
+///
+/// Each element is a 16-byte or larger AST value built from as little as two
+/// input bytes, so without this cap a maximal frame of `* CAPABILITY a a a …`
+/// would cost about eight times its size. A response over the cap fails with
+/// [`ParseError::TooManyItems`]. `SEARCH` results are not counted: each `u32`
+/// costs at most twice its wire bytes, and very large mailboxes legitimately
+/// return millions of them.
+pub const MAX_ITEMS_PER_RESPONSE: usize = 64 * 1024;
 
 /// Result returned by the parser API.
 pub type IResult<'a, T> = Result<(&'a [u8], T), ParseError>;
@@ -51,11 +67,32 @@ pub fn parse_response(input: &[u8]) -> IResult<'_, Response<'_>> {
 struct Parser<'a> {
     input: &'a [u8],
     pos: usize,
+    /// List elements this response may still allocate
+    /// (see [`MAX_ITEMS_PER_RESPONSE`]).
+    items_left: usize,
 }
 
 impl<'a> Parser<'a> {
     fn new(input: &'a [u8]) -> Self {
-        Self { input, pos: 0 }
+        Self {
+            input,
+            pos: 0,
+            items_left: MAX_ITEMS_PER_RESPONSE,
+        }
+    }
+
+    /// Append `item` to `list`, charging it against the per-response item
+    /// budget. Called after the item parsed, so a truncated frame that is
+    /// still within budget keeps reporting `Incomplete`.
+    fn push_item<T>(&mut self, list: &mut Vec<T>, item: T) -> Result<(), ParseError> {
+        self.items_left = self
+            .items_left
+            .checked_sub(1)
+            .ok_or(ParseError::TooManyItems {
+                max: MAX_ITEMS_PER_RESPONSE,
+            })?;
+        list.push(item);
+        Ok(())
     }
 
     fn remaining(&self) -> &'a [u8] {
@@ -64,6 +101,20 @@ impl<'a> Parser<'a> {
 
     fn is_eof(&self) -> bool {
         self.pos >= self.input.len()
+    }
+
+    /// The bytes from `start` to the cursor as text, once a scan has stopped.
+    ///
+    /// Every token is followed by something (at least the frame's CRLF), so
+    /// a scan that stopped at the end of the buffer saw a truncated token:
+    /// report `Incomplete` before validating UTF-8, which would otherwise
+    /// reject a cut through a multi-byte character.
+    fn scanned_text(&self, start: usize) -> Result<&'a str, ParseError> {
+        if self.is_eof() {
+            return Err(ParseError::Incomplete);
+        }
+        core::str::from_utf8(&self.input[start..self.pos])
+            .map_err(|_| ParseError::Other("Invalid UTF-8"))
     }
 
     fn peek(&self) -> Result<u8, ParseError> {
@@ -147,6 +198,23 @@ impl<'a> Parser<'a> {
         self.consume_byte(b' ')
     }
 
+    /// Consume `NIL`, or classify why it is absent. A truncated `N` / `NI`
+    /// at the end of the buffer is `Incomplete`; anything else is not an
+    /// nstring and is `Malformed`.
+    fn expect_nil(&mut self) -> Result<(), ParseError> {
+        const NIL: &[u8] = b"NIL";
+        if self.try_consume_keyword_ci(NIL) {
+            return Ok(());
+        }
+        let rest = self.remaining();
+        let is_truncated_nil =
+            rest.len() < NIL.len() && rest.iter().zip(NIL).all(|(a, b)| a.eq_ignore_ascii_case(b));
+        if is_truncated_nil {
+            return Err(ParseError::Incomplete);
+        }
+        Err(ParseError::Malformed("expected nstring"))
+    }
+
     /// Decimal number — `1*DIGIT`, returned as `u32`.
     fn parse_number(&mut self) -> Result<u32, ParseError> {
         let start = self.pos;
@@ -191,8 +259,7 @@ impl<'a> Parser<'a> {
             }
             return Err(ParseError::Malformed("expected atom"));
         }
-        let bytes = &self.input[start..self.pos];
-        core::str::from_utf8(bytes).map_err(|_| ParseError::Other("Invalid UTF-8"))
+        self.scanned_text(start)
     }
 
     /// Tag — like atom but `+` is also allowed-after-first-position; in
@@ -212,8 +279,7 @@ impl<'a> Parser<'a> {
             }
             return Err(ParseError::Malformed("expected tag"));
         }
-        core::str::from_utf8(&self.input[start..self.pos])
-            .map_err(|_| ParseError::Other("Invalid UTF-8"))
+        self.scanned_text(start)
     }
 
     /// Quoted string: `"..."`. Returns the byte content between the quotes.
@@ -231,14 +297,19 @@ impl<'a> Parser<'a> {
                     return Ok(s);
                 }
                 b'\\' => {
-                    // Skip the escape and the next char (must be `"` or `\`).
+                    // RFC 9051 only lets `\` escape the quoted-specials.
                     self.pos += 1;
-                    let _escaped = self.peek()?;
+                    if !matches!(self.peek()?, b'"' | b'\\') {
+                        return Err(ParseError::Malformed("invalid escape in quoted string"));
+                    }
                     self.pos += 1;
                 }
                 b'\r' | b'\n' => {
                     return Err(ParseError::Malformed("CR/LF inside quoted string"));
                 }
+                // CHAR excludes NUL (RFC 9051 §9). Other controls are
+                // TEXT-CHARs and stay accepted.
+                0 => return Err(ParseError::Malformed("NUL inside quoted string")),
                 _ => self.pos += 1,
             }
         }
@@ -290,11 +361,8 @@ impl<'a> Parser<'a> {
                 Ok(Some(s))
             }
             _ => {
-                if self.try_consume_keyword_ci(b"NIL") {
-                    Ok(None)
-                } else {
-                    Err(ParseError::Malformed("expected nstring"))
-                }
+                self.expect_nil()?;
+                Ok(None)
             }
         }
     }
@@ -307,7 +375,8 @@ impl<'a> Parser<'a> {
             return Ok(items);
         }
         loop {
-            items.push(self.parse_flag_or_atom()?);
+            let item = self.parse_flag_or_atom()?;
+            self.push_item(&mut items, item)?;
             match self.peek()? {
                 b' ' => {
                     self.pos += 1;
@@ -341,10 +410,12 @@ impl<'a> Parser<'a> {
             }
         }
         if start == self.pos {
+            if self.is_eof() {
+                return Err(ParseError::Incomplete);
+            }
             return Err(ParseError::Malformed("expected flag/atom"));
         }
-        core::str::from_utf8(&self.input[start..self.pos])
-            .map_err(|_| ParseError::Other("Invalid UTF-8"))
+        self.scanned_text(start)
     }
 
     /// Parse a balanced parenthesized expression starting at the current
@@ -373,6 +444,9 @@ impl<'a> Parser<'a> {
                 b'{' => {
                     self.parse_literal()?;
                 }
+                b'\r' | b'\n' => {
+                    return Err(ParseError::Malformed("CR/LF inside parenthesised value"));
+                }
                 _ => self.pos += 1,
             }
         }
@@ -389,8 +463,7 @@ impl<'a> Parser<'a> {
             }
             self.pos += 1;
         }
-        core::str::from_utf8(&self.input[start..self.pos])
-            .map_err(|_| ParseError::Other("Invalid UTF-8"))
+        self.scanned_text(start)
     }
 
     // -----------------------------------------------------------------
@@ -524,7 +597,15 @@ impl<'a> Parser<'a> {
             if c == b']' || c == b' ' {
                 break;
             }
+            if c == b'\r' || c == b'\n' {
+                return Err(ParseError::Malformed("CR/LF inside response code"));
+            }
             self.pos += 1;
+        }
+        // A code atom is always followed by `]` or SP; reaching the end of
+        // the buffer means the atom is truncated, not finished.
+        if self.is_eof() {
+            return Err(ParseError::Incomplete);
         }
         if start == self.pos {
             return Err(ParseError::Malformed("empty response code"));
@@ -554,7 +635,8 @@ impl<'a> Parser<'a> {
             _ if atom.eq_ignore_ascii_case("CAPABILITY") => {
                 let mut caps = Vec::new();
                 while self.try_consume_byte(b' ') {
-                    caps.push(self.parse_atom()?);
+                    let cap = self.parse_atom()?;
+                    self.push_item(&mut caps, cap)?;
                 }
                 ResponseCode::Capability(caps)
             }
@@ -572,18 +654,7 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 let extra = if self.try_consume_byte(b' ') {
-                    let extra_start = self.pos;
-                    while let Ok(c) = self.peek() {
-                        if c == b']' {
-                            break;
-                        }
-                        self.pos += 1;
-                    }
-                    let bytes = &self.input[extra_start..self.pos];
-                    Some(
-                        core::str::from_utf8(bytes)
-                            .map_err(|_| ParseError::Other("Invalid UTF-8"))?,
-                    )
+                    Some(self.read_until_byte(b']')?)
                 } else {
                     None
                 };
@@ -656,7 +727,8 @@ impl<'a> Parser<'a> {
         let resp = if name.eq_ignore_ascii_case("CAPABILITY") {
             let mut caps = Vec::new();
             while self.try_consume_byte(b' ') {
-                caps.push(self.parse_atom()?);
+                let cap = self.parse_atom()?;
+                self.push_item(&mut caps, cap)?;
             }
             DataResponse::Capability(caps)
         } else if name.eq_ignore_ascii_case("LIST") {
@@ -728,7 +800,7 @@ impl<'a> Parser<'a> {
             let key = self.parse_atom()?;
             self.consume_sp()?;
             let value = self.parse_number()?;
-            items.push(if key.eq_ignore_ascii_case("MESSAGES") {
+            let item = if key.eq_ignore_ascii_case("MESSAGES") {
                 StatusItem::Messages(value)
             } else if key.eq_ignore_ascii_case("RECENT") {
                 StatusItem::Recent(value)
@@ -740,7 +812,8 @@ impl<'a> Parser<'a> {
                 StatusItem::Unseen(value)
             } else {
                 StatusItem::Other(value)
-            });
+            };
+            self.push_item(&mut items, item)?;
             match self.peek()? {
                 b' ' => {
                     self.pos += 1;
@@ -765,7 +838,8 @@ impl<'a> Parser<'a> {
             return Ok(atts);
         }
         loop {
-            atts.push(self.parse_one_fetch_att()?);
+            let att = self.parse_one_fetch_att()?;
+            self.push_item(&mut atts, att)?;
             match self.peek()? {
                 b' ' => {
                     self.pos += 1;
@@ -861,6 +935,11 @@ impl<'a> Parser<'a> {
             }
             self.pos += 1;
         }
+        // An attribute name is always followed by SP, `[` or `)`; reaching
+        // the end of the buffer means the name is truncated.
+        if self.is_eof() {
+            return Err(ParseError::Incomplete);
+        }
         if start == self.pos {
             return Err(ParseError::Malformed("expected FETCH att name"));
         }
@@ -879,8 +958,7 @@ impl<'a> Parser<'a> {
             }
             self.pos += 1;
         }
-        core::str::from_utf8(&self.input[start..self.pos])
-            .map_err(|_| ParseError::Other("Invalid UTF-8"))
+        self.scanned_text(start)
     }
 
     /// nstring → byte slice (literal or quoted). NIL becomes an empty slice.
@@ -892,11 +970,8 @@ impl<'a> Parser<'a> {
             }
             b'{' => self.parse_literal(),
             _ => {
-                if self.try_consume_keyword_ci(b"NIL") {
-                    Ok(&self.input[self.pos..self.pos])
-                } else {
-                    Err(ParseError::Malformed("expected nstring"))
-                }
+                self.expect_nil()?;
+                Ok(&self.input[self.pos..self.pos])
             }
         }
     }
@@ -910,11 +985,8 @@ impl<'a> Parser<'a> {
             }
             b'{' => Ok(Some(self.parse_literal()?)),
             _ => {
-                if self.try_consume_keyword_ci(b"NIL") {
-                    Ok(None)
-                } else {
-                    Err(ParseError::Malformed("expected nstring"))
-                }
+                self.expect_nil()?;
+                Ok(None)
             }
         }
     }
@@ -960,6 +1032,107 @@ mod tests {
         let (rem, r) = parse_response(input).unwrap();
         assert_eq!(rem.len(), 0, "non-empty remainder for input {:?}", input);
         r
+    }
+
+    // --- Line-break and quoting hygiene ------------------------------
+
+    fn malformed(input: &[u8]) -> bool {
+        matches!(parse_response(input), Err(ParseError::Malformed(_)))
+    }
+
+    #[test]
+    fn response_code_atom_cut_by_crlf_is_malformed_not_merged() {
+        // Without the fix this parsed as ONE status response that swallowed
+        // the EXISTS and the tagged completion that follow it.
+        assert!(malformed(b"* OK [FOO\r\n* 2 EXISTS\r\nA1 OK [x] done\r\n"));
+    }
+
+    #[test]
+    fn response_code_argument_cut_by_crlf_is_malformed() {
+        assert!(malformed(b"* OK [FOO bar\r\n* 2 EXISTS\r\nA1 OK done]\r\n"));
+    }
+
+    #[test]
+    fn parenthesised_value_cut_by_crlf_is_malformed() {
+        assert!(malformed(
+            b"* 1 FETCH (BODYSTRUCTURE (\"TEXT\"\r\n* 2 EXISTS\r\n))\r\n"
+        ));
+    }
+
+    #[test]
+    fn quoted_string_allows_only_quote_and_backslash_escapes() {
+        assert!(malformed(b"* LIST () \"/\" \"a\\x\"\r\n"));
+        assert!(malformed(b"* LIST () \"/\" \"a\\\r\"\r\n"));
+        let Response::Data(DataResponse::List { name, .. }) =
+            ok(b"* LIST () \"/\" \"a\\\"b\\\\c\"\r\n")
+        else {
+            panic!("expected LIST");
+        };
+        assert_eq!(name, "a\\\"b\\\\c");
+    }
+
+    #[test]
+    fn quoted_string_rejects_nul() {
+        assert!(malformed(b"* LIST () \"/\" \"a\0b\"\r\n"));
+    }
+
+    #[test]
+    fn quoted_string_cut_after_backslash_is_incomplete() {
+        assert_eq!(
+            parse_response(b"* LIST () \"/\" \"a\\").unwrap_err(),
+            ParseError::Incomplete
+        );
+    }
+
+    // --- Item budget -------------------------------------------------
+
+    fn atoms(n: usize) -> String {
+        " a".repeat(n)
+    }
+
+    #[test]
+    fn capability_at_item_budget_parses() {
+        let frame = format!("* CAPABILITY{}\r\n", atoms(MAX_ITEMS_PER_RESPONSE));
+        let Response::Data(DataResponse::Capability(caps)) = ok(frame.as_bytes()) else {
+            panic!("expected CAPABILITY");
+        };
+        assert_eq!(caps.len(), MAX_ITEMS_PER_RESPONSE);
+    }
+
+    #[test]
+    fn capability_over_item_budget_is_rejected() {
+        let frame = format!("* CAPABILITY{}\r\n", atoms(MAX_ITEMS_PER_RESPONSE + 1));
+        assert_eq!(
+            parse_response(frame.as_bytes()).unwrap_err(),
+            ParseError::TooManyItems {
+                max: MAX_ITEMS_PER_RESPONSE
+            }
+        );
+    }
+
+    #[test]
+    fn nested_lists_share_one_item_budget() {
+        // Two FETCH attributes whose flag lists are each under the budget
+        // but together exceed it: the budget is per response, not per list.
+        let half = MAX_ITEMS_PER_RESPONSE / 2;
+        let list = format!("({})", atoms(half).trim_start());
+        let frame = format!("* 1 FETCH (FLAGS {list} FLAGS {list})\r\n");
+        assert_eq!(
+            parse_response(frame.as_bytes()).unwrap_err(),
+            ParseError::TooManyItems {
+                max: MAX_ITEMS_PER_RESPONSE
+            }
+        );
+    }
+
+    #[test]
+    fn search_ids_are_not_charged_against_item_budget() {
+        let ids = " 1".repeat(MAX_ITEMS_PER_RESPONSE + 1);
+        let frame = format!("* SEARCH{ids}\r\n");
+        let Response::Data(DataResponse::Search(found)) = ok(frame.as_bytes()) else {
+            panic!("expected SEARCH");
+        };
+        assert_eq!(found.len(), MAX_ITEMS_PER_RESPONSE + 1);
     }
 
     // --- Continue ----------------------------------------------------
@@ -1948,5 +2121,103 @@ mod tests {
             res,
             Err(ParseError::Malformed("CR/LF before terminator"))
         ));
+    }
+}
+
+/// Framing contract: every strict prefix of a complete response must parse
+/// as `Incomplete`. The client's read loop relies on this to tell "wait for
+/// more bytes" from "protocol violation"; a prefix that returns any other
+/// error makes a benign read boundary look like a hostile server.
+#[cfg(test)]
+mod prefix_soundness_tests {
+    use super::parse_response;
+    use crate::error::ParseError;
+
+    /// Complete, valid frames covering every grammar branch the parser
+    /// dispatches on. Each one must parse fully with no remainder.
+    const FRAMES: &[&[u8]] = &[
+        b"+ ready\r\n",
+        b"+ [ALERT] go ahead\r\n",
+        b"* OK IMAP4rev2 ready\r\n",
+        b"* PREAUTH logged in\r\n",
+        b"* BYE shutting down\r\n",
+        b"* OK [UIDVALIDITY 3857529045] UIDs valid\r\n",
+        b"* OK [UIDNEXT 4392] Predicted next UID\r\n",
+        b"* OK [PERMANENTFLAGS (\\Deleted \\Seen \\*)] Limited\r\n",
+        b"* OK [CAPABILITY IMAP4rev2 IDLE] ready\r\n",
+        b"* NO [ALERT] disk full\r\n",
+        b"A0001 OK [READ-WRITE] SELECT completed\r\n",
+        b"A0002 NO [AUTHENTICATIONFAILED] invalid\r\n",
+        b"A0003 BAD command unknown\r\n",
+        b"A0004 OK [CAPABILITY IMAP4rev2 AUTH=PLAIN] done\r\n",
+        b"* CAPABILITY IMAP4rev2 STARTTLS AUTH=PLAIN IDLE\r\n",
+        b"* 172 EXISTS\r\n",
+        b"* 3 EXPUNGE\r\n",
+        b"* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n",
+        b"* LIST (\\HasNoChildren) \"/\" \"INBOX\"\r\n",
+        b"* LIST () NIL \"Archive\"\r\n",
+        b"* LIST (\\Noselect) \"/\" {5}\r\nfoo/b\r\n",
+        b"* STATUS \"INBOX\" (MESSAGES 231 UIDNEXT 44292)\r\n",
+        b"* SEARCH 2 84 882\r\n",
+        b"* SEARCH\r\n",
+        b"* 12 FETCH (UID 4827 FLAGS (\\Seen))\r\n",
+        b"* 12 FETCH (RFC822.SIZE 4286 INTERNALDATE \"17-Jul-1996 02:44:25 -0700\")\r\n",
+        b"* 12 FETCH (BODY[] {5}\r\nhello)\r\n",
+        b"* 12 FETCH (BODY[HEADER] NIL)\r\n",
+        b"* 12 FETCH (BODY[]<0> \"abc\")\r\n",
+        b"* 12 FETCH (RFC822 NIL RFC822.HEADER \"x\" RFC822.TEXT {2}\r\nhi)\r\n",
+        b"* 12 FETCH (ENVELOPE (NIL \"subj\" ((\"a\" NIL \"b\" \"c\")) NIL NIL NIL NIL NIL NIL NIL))\r\n",
+        b"* 12 FETCH (BODYSTRUCTURE (\"text\" \"plain\" NIL NIL NIL \"7bit\" 3 1))\r\n",
+        b"* 12 FETCH (BODY (\"text\" \"plain\" NIL NIL NIL \"7bit\" 3 1))\r\n",
+        // Multi-byte UTF-8 in every scanner that converts bytes to text, so
+        // prefixes that end mid-character are covered (2-, 3- and 4-byte).
+        b"* OK caf\xc3\xa9 pr\xc3\xaat\r\n",
+        b"A0005 NO \xe6\x97\xa5\xe6\x9c\xac \xf0\x9f\x93\xa7\r\n",
+        b"* OK [X-FOO caf\xc3\xa9 bar] done\r\n",
+        b"* CAPABILITY IMAP4rev2 X-caf\xc3\xa9\r\n",
+        b"* FLAGS (\\Seen caf\xc3\xa9)\r\n",
+        b"* LIST () \"/\" caf\xc3\xa9\r\n",
+        b"* LIST () \"/\" \"caf\xc3\xa9\"\r\n",
+    ];
+
+    #[test]
+    fn fixtures_parse_completely() {
+        for frame in FRAMES {
+            match parse_response(frame) {
+                Ok((rest, _)) => assert!(
+                    rest.is_empty(),
+                    "fixture left a remainder: {:?}",
+                    String::from_utf8_lossy(frame)
+                ),
+                Err(e) => panic!(
+                    "fixture failed to parse ({e:?}): {:?}",
+                    String::from_utf8_lossy(frame)
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn every_strict_prefix_returns_incomplete() {
+        let mut unsound = Vec::new();
+        for frame in FRAMES {
+            for cut in 0..frame.len() {
+                let prefix = &frame[..cut];
+                match parse_response(prefix) {
+                    Err(ParseError::Incomplete) => {}
+                    other => unsound.push(format!(
+                        "{:?} -> {:?}",
+                        String::from_utf8_lossy(prefix),
+                        other.map(|_| "Ok")
+                    )),
+                }
+            }
+        }
+        assert!(
+            unsound.is_empty(),
+            "{} prefixes are not Incomplete:\n{}",
+            unsound.len(),
+            unsound.join("\n")
+        );
     }
 }

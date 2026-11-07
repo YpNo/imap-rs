@@ -1,12 +1,17 @@
 [graph]
+# Every platform the crates are expected to build on, so a crate pulled in
+# only for one of them (e.g. windows-sys) is still checked.
 targets = [
     { triple = "aarch64-apple-darwin" },
     { triple = "x86_64-apple-darwin" },
     { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-unknown-linux-gnu" },
+    { triple = "x86_64-pc-windows-msvc" },
 ]
 
 [advisories]
-unmaintained = "workspace"
+# Report unmaintained crates anywhere in the graph, not only direct ones.
+unmaintained = "all"
 ignore = []
 
 [licenses]
@@ -37,6 +42,8 @@ deny = [
     # Security: TLS and Crypto
     { crate = "openssl", reason = "Use rustls for memory-safe TLS" },
     { crate = "native-tls", reason = "Use rustls for memory-safe TLS" },
+    { crate = "aws-lc-rs", reason = "ADR-001: ring is the only crypto provider; aws-lc-rs drags in a cmake-built C library" },
+    { crate = "aws-lc-sys", reason = "ADR-001: ring is the only crypto provider; aws-lc-sys is a cmake-built C library" },
 ]
 
 [sources]

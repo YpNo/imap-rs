@@ -1,12 +1,14 @@
 //! End-to-end smoke example: TLS connect → LOGIN → SELECT → FETCH → IDLE.
 //!
 //! Run with:
-//!     IMAP_HOST=imap.example.com IMAP_USER=me@example.com IMAP_PASS=... \
-//!         cargo run --example login_and_fetch -p imap-tls
+//!     read -rs IMAP_PASS && export IMAP_PASS
+//!     IMAP_HOST=imap.example.com IMAP_USER=me@example.com \
+//!         cargo run --example login_and_fetch -p imap-rs-tls
 //!
-//! The example uses environment variables so secrets never end up in the
-//! repository or shell history. It is *not* run in CI; treat it as a
-//! manual smoke test.
+//! `read -rs` prompts for the password without echoing it, so it stays out
+//! of the repository and of shell history. Typing `IMAP_PASS=...` on the
+//! command line would record it in history. The example is *not* run in
+//! CI; treat it as a manual smoke test.
 
 use std::env;
 use std::time::Duration;
