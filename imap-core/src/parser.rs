@@ -285,14 +285,19 @@ impl<'a> Parser<'a> {
                     return Ok(s);
                 }
                 b'\\' => {
-                    // Skip the escape and the next char (must be `"` or `\`).
+                    // RFC 9051 only lets `\` escape the quoted-specials.
                     self.pos += 1;
-                    let _escaped = self.peek()?;
+                    if !matches!(self.peek()?, b'"' | b'\\') {
+                        return Err(ParseError::Malformed("invalid escape in quoted string"));
+                    }
                     self.pos += 1;
                 }
                 b'\r' | b'\n' => {
                     return Err(ParseError::Malformed("CR/LF inside quoted string"));
                 }
+                // CHAR excludes NUL (RFC 9051 §9). Other controls are
+                // TEXT-CHARs and stay accepted.
+                0 => return Err(ParseError::Malformed("NUL inside quoted string")),
                 _ => self.pos += 1,
             }
         }
@@ -427,6 +432,9 @@ impl<'a> Parser<'a> {
                 }
                 b'{' => {
                     self.parse_literal()?;
+                }
+                b'\r' | b'\n' => {
+                    return Err(ParseError::Malformed("CR/LF inside parenthesised value"));
                 }
                 _ => self.pos += 1,
             }
@@ -579,6 +587,9 @@ impl<'a> Parser<'a> {
             if c == b']' || c == b' ' {
                 break;
             }
+            if c == b'\r' || c == b'\n' {
+                return Err(ParseError::Malformed("CR/LF inside response code"));
+            }
             self.pos += 1;
         }
         // A code atom is always followed by `]` or SP; reaching the end of
@@ -633,18 +644,7 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 let extra = if self.try_consume_byte(b' ') {
-                    let extra_start = self.pos;
-                    while let Ok(c) = self.peek() {
-                        if c == b']' {
-                            break;
-                        }
-                        self.pos += 1;
-                    }
-                    let bytes = &self.input[extra_start..self.pos];
-                    Some(
-                        core::str::from_utf8(bytes)
-                            .map_err(|_| ParseError::Other("Invalid UTF-8"))?,
-                    )
+                    Some(self.read_until_byte(b']')?)
                 } else {
                     None
                 };
@@ -1023,6 +1023,56 @@ mod tests {
         let (rem, r) = parse_response(input).unwrap();
         assert_eq!(rem.len(), 0, "non-empty remainder for input {:?}", input);
         r
+    }
+
+    // --- Line-break and quoting hygiene ------------------------------
+
+    fn malformed(input: &[u8]) -> bool {
+        matches!(parse_response(input), Err(ParseError::Malformed(_)))
+    }
+
+    #[test]
+    fn response_code_atom_cut_by_crlf_is_malformed_not_merged() {
+        // Without the fix this parsed as ONE status response that swallowed
+        // the EXISTS and the tagged completion that follow it.
+        assert!(malformed(b"* OK [FOO\r\n* 2 EXISTS\r\nA1 OK [x] done\r\n"));
+    }
+
+    #[test]
+    fn response_code_argument_cut_by_crlf_is_malformed() {
+        assert!(malformed(b"* OK [FOO bar\r\n* 2 EXISTS\r\nA1 OK done]\r\n"));
+    }
+
+    #[test]
+    fn parenthesised_value_cut_by_crlf_is_malformed() {
+        assert!(malformed(
+            b"* 1 FETCH (BODYSTRUCTURE (\"TEXT\"\r\n* 2 EXISTS\r\n))\r\n"
+        ));
+    }
+
+    #[test]
+    fn quoted_string_allows_only_quote_and_backslash_escapes() {
+        assert!(malformed(b"* LIST () \"/\" \"a\\x\"\r\n"));
+        assert!(malformed(b"* LIST () \"/\" \"a\\\r\"\r\n"));
+        let Response::Data(DataResponse::List { name, .. }) =
+            ok(b"* LIST () \"/\" \"a\\\"b\\\\c\"\r\n")
+        else {
+            panic!("expected LIST");
+        };
+        assert_eq!(name, "a\\\"b\\\\c");
+    }
+
+    #[test]
+    fn quoted_string_rejects_nul() {
+        assert!(malformed(b"* LIST () \"/\" \"a\0b\"\r\n"));
+    }
+
+    #[test]
+    fn quoted_string_cut_after_backslash_is_incomplete() {
+        assert_eq!(
+            parse_response(b"* LIST () \"/\" \"a\\").unwrap_err(),
+            ParseError::Incomplete
+        );
     }
 
     // --- Item budget -------------------------------------------------
