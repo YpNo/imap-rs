@@ -23,6 +23,7 @@ use std::time::Duration;
 use crate::base64;
 use bytes::Bytes;
 use tokio::sync::{broadcast, oneshot};
+use zeroize::Zeroizing;
 
 use crate::capabilities::Capabilities;
 use crate::client::{CommandStream, RawClient};
@@ -189,7 +190,7 @@ impl Session<Unauthenticated, Tls> {
     ) -> Result<Session<Authenticated, Tls>, ClientError> {
         let user_q = imap_quoted(user)?;
         let pass_q = pass.as_imap_quoted()?;
-        let cmd = format!("LOGIN {} {}", user_q, pass_q);
+        let cmd = login_command(&user_q, &pass_q);
 
         let frame = self.raw.execute_command(&cmd).await?;
         self.refresh_capabilities_from_frame(&frame).await?;
@@ -220,15 +221,7 @@ impl Session<Unauthenticated, Tls> {
             .await?;
         let reply_rx = await_continuation(stream, self.raw.default_timeout).await?;
 
-        // SASL PLAIN: \0<authzid>\0<authcid>\0<password>; we use empty authzid.
-        let mut sasl = Vec::with_capacity(2 + user.len() + pass.as_str().len());
-        sasl.push(0);
-        sasl.extend_from_slice(user.as_bytes());
-        sasl.push(0);
-        sasl.extend_from_slice(pass.as_str().as_bytes());
-        let mut payload = base64::encode(&sasl).into_bytes();
-        payload.extend_from_slice(b"\r\n");
-        self.raw.send_raw(payload).await?;
+        self.raw.send_secret(sasl_plain_line(user, pass)).await?;
 
         let frame = match reply_rx.await {
             Ok(r) => r?,
@@ -479,6 +472,43 @@ impl<T> Session<Selected, T> {
 }
 
 // --- Helpers -----------------------------------------------------------
+
+/// Line terminator for a client line.
+const CRLF: &[u8] = b"\r\n";
+
+/// `LOGIN <user> <pass>` from already-quoted arguments, built in one
+/// exact-size allocation that is wiped on drop.
+fn login_command(user_q: &str, pass_q: &str) -> Zeroizing<String> {
+    const VERB: &str = "LOGIN ";
+    let mut cmd = Zeroizing::new(String::with_capacity(
+        VERB.len() + user_q.len() + 1 + pass_q.len(),
+    ));
+    cmd.push_str(VERB);
+    cmd.push_str(user_q);
+    cmd.push(' ');
+    cmd.push_str(pass_q);
+    cmd
+}
+
+/// The `AUTHENTICATE PLAIN` client response (RFC 4616):
+/// base64(`\0<authcid>\0<password>`, empty authzid) followed by CRLF.
+/// Both buffers are sized up front and wiped on drop, so neither the
+/// plaintext nor its encoding is left in freed memory.
+fn sasl_plain_line(user: &str, pass: &Password) -> Zeroizing<Vec<u8>> {
+    let secret = pass.as_str().as_bytes();
+    let mut sasl = Zeroizing::new(Vec::with_capacity(2 + user.len() + secret.len()));
+    sasl.push(0);
+    sasl.extend_from_slice(user.as_bytes());
+    sasl.push(0);
+    sasl.extend_from_slice(secret);
+
+    let mut line = Zeroizing::new(Vec::with_capacity(
+        base64::encoded_len(sasl.len()) + CRLF.len(),
+    ));
+    base64::encode_into(&sasl, &mut line);
+    line.extend_from_slice(CRLF);
+    line
+}
 
 fn is_continuation(response: &Response<'_>) -> bool {
     matches!(response, Response::Continue(_))
@@ -967,6 +997,21 @@ mod tests {
             .unwrap();
         let (_, r) = task.await.unwrap();
         r.unwrap();
+    }
+
+    #[test]
+    fn sasl_plain_line_is_rfc4616_base64_built_without_reallocation() {
+        let line = sasl_plain_line("user", &Password::new("pass"));
+        assert_eq!(&line[..], b"AHVzZXIAcGFzcw==\r\n");
+        assert_eq!(line.capacity(), line.len());
+    }
+
+    #[test]
+    fn login_command_is_built_without_reallocation() {
+        let pass = Password::new("se\"cret").as_imap_quoted().unwrap();
+        let cmd = login_command("\"alice\"", &pass);
+        assert_eq!(cmd.as_str(), "LOGIN \"alice\" \"se\\\"cret\"");
+        assert_eq!(cmd.capacity(), cmd.len());
     }
 
     /// More untagged frames than the event broadcast holds, to show that a

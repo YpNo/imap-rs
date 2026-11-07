@@ -32,6 +32,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
+use zeroize::Zeroizing;
 
 use crate::error::ClientError;
 use imap_core::ast::{Response, Status};
@@ -112,20 +113,34 @@ enum Route {
     Broadcast,
 }
 
-/// Items written by [`write_loop`].
+/// Items written by [`write_loop`]. The bytes may hold a credential (a
+/// `LOGIN` line, a SASL response), so every request is wiped when dropped:
+/// after it is written, or unsent if the connection is gone.
 enum WriteRequest {
     /// A tagged command. The dispatcher registers `tag` → `reply_tx` (and
     /// the frame collector, if any) before writing `bytes`, so a fast
     /// server can never beat us to the pending-map insertion.
     Command {
-        bytes: Vec<u8>,
+        bytes: Zeroizing<Vec<u8>>,
         tag: String,
         reply_tx: TaggedReply,
         collector: Option<(FrameFilter, mpsc::Sender<Bytes>)>,
     },
     /// A raw byte sequence. Used for IDLE's `DONE` and continuation
     /// payloads where no tagged response is expected immediately.
-    Raw { bytes: Vec<u8> },
+    Raw { bytes: Zeroizing<Vec<u8>> },
+}
+
+/// `<tag> <cmd>\r\n` in one exact-size allocation, so that formatting a
+/// command that carries a password leaves no un-wiped copy behind.
+fn command_line(tag: &str, cmd: &str) -> Zeroizing<Vec<u8>> {
+    const CRLF: &[u8] = b"\r\n";
+    let mut line = Zeroizing::new(Vec::with_capacity(tag.len() + 1 + cmd.len() + CRLF.len()));
+    line.extend_from_slice(tag.as_bytes());
+    line.push(b' ');
+    line.extend_from_slice(cmd.as_bytes());
+    line.extend_from_slice(CRLF);
+    line
 }
 
 /// A command whose untagged data arrives on its own bounded stream; returned
@@ -299,7 +314,7 @@ impl RawClient {
     ) -> Result<(String, ReplyReceiver), ClientError> {
         crate::wire::reject_line_breaks(cmd)?;
         let tag = self.next_tag();
-        let bytes = format!("{} {}\r\n", tag, cmd).into_bytes();
+        let bytes = command_line(&tag, cmd);
         let (reply_tx, reply_rx) = oneshot::channel();
         self.write_tx
             .send(WriteRequest::Command {
@@ -314,8 +329,18 @@ impl RawClient {
     }
 
     /// Send raw bytes on the wire. Used for IDLE's `DONE` and other
-    /// continuation payloads where no new tag is allocated.
+    /// continuation payloads where no new tag is allocated. The bytes are
+    /// wiped once written.
     pub async fn send_raw(&mut self, bytes: Vec<u8>) -> Result<(), ClientError> {
+        self.send_secret(Zeroizing::new(bytes)).await
+    }
+
+    /// [`send_raw`](Self::send_raw) for bytes already held in a wiped-on-drop
+    /// buffer, so the secret is never moved into an unprotected one.
+    pub(crate) async fn send_secret(
+        &mut self,
+        bytes: Zeroizing<Vec<u8>>,
+    ) -> Result<(), ClientError> {
         self.write_tx
             .send(WriteRequest::Raw { bytes })
             .await
@@ -344,7 +369,9 @@ impl WriterHandle {
     /// Send raw bytes on the connection's write half (e.g. an IDLE `DONE`).
     pub async fn send_raw(&self, bytes: Vec<u8>) -> Result<(), ClientError> {
         self.write_tx
-            .send(WriteRequest::Raw { bytes })
+            .send(WriteRequest::Raw {
+                bytes: Zeroizing::new(bytes),
+            })
             .await
             .map_err(|_| ClientError::ConnectionClosed)
     }
@@ -540,6 +567,13 @@ mod tests {
 
     fn is_fetch(response: &Response<'_>) -> bool {
         matches!(response, Response::Data(DataResponse::Fetch { .. }))
+    }
+
+    #[test]
+    fn command_line_is_built_without_reallocation() {
+        let line: Zeroizing<Vec<u8>> = command_line("A0001", "LOGIN \"a\" \"secret\"");
+        assert_eq!(&line[..], b"A0001 LOGIN \"a\" \"secret\"\r\n");
+        assert_eq!(line.capacity(), line.len());
     }
 
     #[tokio::test]

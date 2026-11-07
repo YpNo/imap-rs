@@ -21,11 +21,19 @@ const OUTPUT_GROUP: usize = 4;
 /// Mask selecting one 6-bit sextet.
 const SEXTET_MASK: u32 = 0x3F;
 
-/// Encode `input` as standard, padded base64 (RFC 4648 §4).
+/// Length of the padded base64 encoding of `input_len` bytes:
+/// `4 * ceil(input_len / 3)`.
+pub(crate) fn encoded_len(input_len: usize) -> usize {
+    input_len.div_ceil(INPUT_GROUP) * OUTPUT_GROUP
+}
+
+/// Append the standard, padded base64 encoding (RFC 4648 §4) of `input` to
+/// `out`. The appended bytes are pure ASCII.
 ///
-/// The output is pure ASCII and has length `4 * ceil(len / 3)`.
-pub(crate) fn encode(input: &[u8]) -> String {
-    let mut out = Vec::with_capacity(input.len().div_ceil(INPUT_GROUP) * OUTPUT_GROUP);
+/// Writes into a caller-owned buffer so a secret's encoding can live in a
+/// buffer that is wiped on drop; reserve [`encoded_len`] bytes first and
+/// the buffer never reallocates, so no un-wiped copy is left behind.
+pub(crate) fn encode_into(input: &[u8], out: &mut Vec<u8>) {
     let (groups, remainder) = input.as_chunks::<INPUT_GROUP>();
     for &[a, b, c] in groups {
         out.extend_from_slice(&encode_group(a, b, c));
@@ -41,10 +49,6 @@ pub(crate) fn encode(input: &[u8]) -> String {
         }
         _ => {}
     }
-    // Every byte pushed above is drawn from ALPHABET or is PAD, so the
-    // buffer is ASCII and this conversion cannot fail; the fallback only
-    // exists to honour the project's no-unwrap rule.
-    String::from_utf8(out).unwrap_or_default()
 }
 
 /// Encode one 24-bit quantum as four alphabet characters.
@@ -60,7 +64,31 @@ fn encode_group(a: u8, b: u8, c: u8) -> [u8; OUTPUT_GROUP] {
 
 #[cfg(test)]
 mod tests {
-    use super::encode;
+    use super::{encode_into, encoded_len};
+
+    fn encode(input: &[u8]) -> String {
+        let mut out = Vec::with_capacity(encoded_len(input.len()));
+        encode_into(input, &mut out);
+        String::from_utf8(out).unwrap()
+    }
+
+    /// A buffer sized with `encoded_len` is filled exactly, so the encoder
+    /// never reallocates and leaves no un-wiped copy of a secret behind.
+    #[test]
+    fn encode_into_fills_a_presized_buffer_without_growing_it() {
+        for input in [
+            &b""[..],
+            b"f",
+            b"fo",
+            b"\0user\0correct horse battery staple",
+        ] {
+            let mut out = Vec::with_capacity(encoded_len(input.len()));
+            let capacity = out.capacity();
+            encode_into(input, &mut out);
+            assert_eq!(out.len(), encoded_len(input.len()));
+            assert_eq!(out.capacity(), capacity, "input {input:?}");
+        }
+    }
 
     /// RFC 4648 §10 test vectors.
     #[test]

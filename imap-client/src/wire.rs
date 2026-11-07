@@ -127,7 +127,12 @@ fn is_printable_ascii(b: u8) -> bool {
 /// Escaping keeps the text inside the string; line breaks are left to
 /// [`reject_line_breaks`], which every command passes through.
 pub(crate) fn quote(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 2);
+    /// The opening and closing `"`.
+    const QUOTES: usize = 2;
+    // Sized exactly, so the buffer never grows: a reallocation would free
+    // an un-wiped copy of a quoted password.
+    let escapes = text.bytes().filter(|b| matches!(b, b'"' | b'\\')).count();
+    let mut out = String::with_capacity(text.len() + escapes + QUOTES);
     out.push('"');
     for c in text.chars() {
         if matches!(c, '"' | '\\') {
@@ -269,6 +274,16 @@ mod tests {
                 rejected(flag(&Flag::Custom(bad.into()))),
                 "accepted {bad:?}"
             );
+        }
+    }
+
+    #[test]
+    fn quote_allocates_its_exact_length_once() {
+        // A quoted password must not grow its buffer: each reallocation
+        // frees a copy of the secret without wiping it.
+        for text in ["plain", "a\"b\\c", "\"\"\"\"", ""] {
+            let quoted = quote(text);
+            assert_eq!(quoted.capacity(), quoted.len(), "text {text:?}");
         }
     }
 

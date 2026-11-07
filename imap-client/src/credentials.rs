@@ -2,10 +2,13 @@
 //!
 //! [`Password`] and [`OAuthToken`] are zeroized on drop and redact their
 //! contents in `Debug` output, so secrets are never wiped late or leaked
-//! through logging.
+//! through logging. The copies the client derives to send them (the quoted
+//! form, the `LOGIN` line, the SASL payload and the bytes queued for the
+//! socket) are wiped on drop too, and sized up front so that no buffer
+//! growth leaves an un-wiped copy behind.
 
 use std::fmt;
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::error::ClientError;
 
@@ -48,8 +51,10 @@ impl Password {
     /// `NUL`, or any 8-bit byte). Callers facing an 8-bit secret should
     /// use [`Session::authenticate_plain`](crate::session::Session) which
     /// transports the secret as base64 over a SASL exchange.
-    pub fn as_imap_quoted(&self) -> Result<String, ClientError> {
-        imap_quoted(&self.0)
+    ///
+    /// The quoted copy is wiped when dropped, like the password itself.
+    pub fn as_imap_quoted(&self) -> Result<Zeroizing<String>, ClientError> {
+        imap_quoted(&self.0).map(Zeroizing::new)
     }
 }
 
@@ -121,6 +126,12 @@ mod tests {
     fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
 
     #[test]
+    fn as_imap_quoted_returns_a_wiped_on_drop_buffer() {
+        let quoted: zeroize::Zeroizing<String> = Password::new("p\"w").as_imap_quoted().unwrap();
+        assert_eq!(quoted.as_str(), "\"p\\\"w\"");
+    }
+
+    #[test]
     fn credentials_implement_zeroize_on_drop() {
         assert_zeroize_on_drop::<Password>();
         assert_zeroize_on_drop::<OAuthToken>();
@@ -186,6 +197,9 @@ mod tests {
     #[test]
     fn test_password_as_imap_quoted_roundtrip() {
         let p = Password::new("p@ss\"with\\specials");
-        assert_eq!(p.as_imap_quoted().unwrap(), "\"p@ss\\\"with\\\\specials\"");
+        assert_eq!(
+            p.as_imap_quoted().unwrap().as_str(),
+            "\"p@ss\\\"with\\\\specials\""
+        );
     }
 }
