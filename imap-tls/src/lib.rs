@@ -218,7 +218,9 @@ where
         }
     }
 
-    Ok(Session::new(raw, capabilities))
+    // The handshake above verified the certificate, and these capabilities
+    // were read inside the encrypted channel: the `new_tls` contract holds.
+    Ok(Session::new_tls(raw, capabilities))
 }
 
 /// Read the initial greeting, run a `CAPABILITY` round-trip, verify the

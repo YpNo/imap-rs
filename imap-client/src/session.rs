@@ -91,17 +91,6 @@ impl<S, T> Session<S, T> {
         }
     }
 
-    /// Re-tag the session's transport type parameter (e.g. `PlainText` → `Tls`
-    /// after a STARTTLS upgrade). Performs no I/O.
-    pub fn transition_transport<NewTransport>(self) -> Session<S, NewTransport> {
-        Session {
-            raw: self.raw,
-            capabilities: self.capabilities,
-            _state: PhantomData,
-            _transport: PhantomData,
-        }
-    }
-
     /// Subscribe to untagged server frames for this session
     /// (see [`RawClient::events`](crate::client::RawClient::events)).
     pub fn events(&self) -> broadcast::Receiver<Bytes> {
@@ -139,10 +128,33 @@ impl<S, T> Session<S, T> {
     }
 }
 
-impl<T> Session<Unauthenticated, T> {
-    /// Wrap a connected [`RawClient`] as a fresh, unauthenticated session with
-    /// the given initial capabilities.
+impl Session<Unauthenticated, PlainText> {
+    /// Wrap a connected [`RawClient`] as a fresh, unauthenticated session on
+    /// a cleartext transport, with the given initial capabilities.
+    ///
+    /// The result cannot `LOGIN` or `AUTHENTICATE`. For an encrypted
+    /// connection use [`imap-rs-tls`](https://docs.rs/imap-rs-tls), or
+    /// [`Session::new_tls`] for a TLS transport of your own.
     pub fn new(raw: RawClient, capabilities: Capabilities) -> Self {
+        Self::new_in_state(raw, capabilities)
+    }
+}
+
+impl Session<Unauthenticated, Tls> {
+    /// Wrap a connected [`RawClient`] as a fresh, unauthenticated session on
+    /// an encrypted transport, unlocking `LOGIN` and `AUTHENTICATE`.
+    ///
+    /// # Contract
+    ///
+    /// The type system cannot see the stream inside `raw`, so the [`Tls`]
+    /// marker is your assertion, not a check. Call this only when that
+    /// stream is TLS whose handshake has completed and whose server
+    /// certificate was verified against the host you meant to reach, and
+    /// pass `capabilities` learned inside that channel, never ones the
+    /// server sent before the upgrade. Wrapping a cleartext stream here
+    /// sends credentials in the clear. `imap-rs-tls` builds sessions this
+    /// way after a verified handshake.
+    pub fn new_tls(raw: RawClient, capabilities: Capabilities) -> Self {
         Self::new_in_state(raw, capabilities)
     }
 }
@@ -1386,10 +1398,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_session_transition_transport() {
-        let (client_io, _server_io) = duplex(1024);
-        let session = unauth_session(client_io);
-        let _ = session.transition_transport::<crate::PlainText>();
+    async fn new_builds_plain_text_and_new_tls_builds_tls() {
+        let (plain_io, _plain_server) = duplex(1024);
+        let _: Session<Unauthenticated, crate::PlainText> =
+            Session::new(RawClient::new(plain_io), Capabilities::default());
+        let (tls_io, _tls_server) = duplex(1024);
+        let _: Session<Unauthenticated, Tls> =
+            Session::new_tls(RawClient::new(tls_io), Capabilities::default());
     }
 
     #[tokio::test]

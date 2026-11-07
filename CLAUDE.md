@@ -48,7 +48,7 @@
 ## Architecture Decision Records
 
 - **ADR-001**: **No-FFI TLS** — Using `rustls` exclusively to avoid vulnerabilities associated with C-based TLS libraries (OpenSSL).
-- **ADR-002**: **Type-State Sessions** — Using the Rust type system to enforce valid protocol transitions (e.g., no LOGIN over PlainText).
+- **ADR-002**: **Type-State Sessions** — Using the Rust type system to enforce valid protocol transitions (e.g., no LOGIN over PlainText). The `Tls` marker is an assertion made by `imap-tls` after a verified handshake, or by callers of `Session::new_tls` under its documented contract; `Session::new` always yields `PlainText`.
 - **ADR-003**: **Zero-Copy Parsing** — The parser uses `&[u8]` references into the network buffer to minimize allocations.
 
 ---
