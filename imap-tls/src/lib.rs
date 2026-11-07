@@ -201,18 +201,20 @@ where
         });
 
     if !got_greeting_caps {
-        let cap_resp = raw.execute_command("CAPABILITY").await?;
+        let cap_resp = raw
+            .execute_streaming(
+                "CAPABILITY",
+                Capabilities::is_capability_response,
+                |frame| {
+                    if let Ok((_, response)) = parse_response(frame) {
+                        capabilities.try_update_from(&response);
+                    }
+                },
+            )
+            .await?;
+        // A `[CAPABILITY …]` code on the tagged OK, if any, is the latest.
         if let Ok((_, response)) = parse_response(&cap_resp) {
             capabilities.try_update_from(&response);
-        }
-        // The `* CAPABILITY …` data line was broadcast — drain it to
-        // pick up the actual capability list.
-        while let Ok(event) = events.try_recv() {
-            if let Ok((_, response)) = parse_response(&event)
-                && capabilities.try_update_from(&response)
-            {
-                break;
-            }
         }
     }
 

@@ -21,10 +21,11 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use crate::base64;
-use tokio::sync::broadcast;
+use bytes::Bytes;
+use tokio::sync::{broadcast, oneshot};
 
 use crate::capabilities::Capabilities;
-use crate::client::RawClient;
+use crate::client::{CommandStream, RawClient};
 use crate::credentials::{Password, imap_quoted};
 use crate::error::ClientError;
 use crate::flags::{Flag, StoreAction};
@@ -102,7 +103,7 @@ impl<S, T> Session<S, T> {
 
     /// Subscribe to untagged server frames for this session
     /// (see [`RawClient::events`](crate::client::RawClient::events)).
-    pub fn events(&self) -> broadcast::Receiver<Vec<u8>> {
+    pub fn events(&self) -> broadcast::Receiver<Bytes> {
         self.raw.events()
     }
 
@@ -110,16 +111,18 @@ impl<S, T> Session<S, T> {
     /// Used after STARTTLS and after authentication when the OK response
     /// did not carry a `[CAPABILITY …]` response code.
     pub async fn refresh_capabilities(&mut self) -> Result<(), ClientError> {
-        let mut events = self.raw.events();
-        let _resp = self.raw.execute_command("CAPABILITY").await?;
-        // The CAPABILITY response is broadcast as an untagged data frame.
-        while let Ok(event) = events.try_recv() {
-            if let Ok((_, response)) = parse_response(&event)
-                && self.capabilities.try_update_from(&response)
-            {
-                return Ok(());
-            }
-        }
+        let capabilities = &mut self.capabilities;
+        self.raw
+            .execute_streaming(
+                "CAPABILITY",
+                Capabilities::is_capability_response,
+                |frame| {
+                    if let Ok((_, response)) = parse_response(frame) {
+                        capabilities.try_update_from(&response);
+                    }
+                },
+            )
+            .await?;
         Ok(())
     }
 
@@ -211,11 +214,11 @@ impl Session<Unauthenticated, Tls> {
             ));
         }
 
-        let mut events = self.raw.events();
-        let (_tag, reply_rx) = self.raw.send_command_async("AUTHENTICATE PLAIN").await?;
-
-        // Wait for `+ ...` continuation request.
-        wait_for_continuation(&mut events, Duration::from_secs(30)).await?;
+        let stream = self
+            .raw
+            .send_command_streaming("AUTHENTICATE PLAIN", is_continuation)
+            .await?;
+        let reply_rx = await_continuation(stream, self.raw.default_timeout).await?;
 
         // SASL PLAIN: \0<authzid>\0<authcid>\0<password>; we use empty authzid.
         let mut sasl = Vec::with_capacity(2 + user.len() + pass.as_str().len());
@@ -306,30 +309,14 @@ impl<T> Session<Selected, T> {
             wire::sequence_set(sequence_set)?,
             wire::fetch_items(items)?
         );
-        let mut events = self.raw.events();
-        let _resp = self.raw.execute_command(&cmd).await?;
-
         let mut results = Vec::new();
-        while let Ok(event) = events.try_recv() {
-            if let Ok((_, Response::Data(DataResponse::Fetch { seq, attributes }))) =
-                parse_response(&event)
-            {
-                let mut uid = None;
-                let mut body = None;
-                for attr in attributes {
-                    match attr {
-                        FetchAttribute::Uid(u) => uid = Some(u),
-                        FetchAttribute::BodySection { data: Some(d), .. } => {
-                            body = Some(d.to_vec())
-                        }
-                        FetchAttribute::Body(b) => body = Some(b.to_vec()),
-                        FetchAttribute::Rfc822(b) => body = Some(b.to_vec()),
-                        _ => {}
-                    }
+        self.raw
+            .execute_streaming(&cmd, is_fetch, |frame| {
+                if let Some(result) = fetch_result(frame) {
+                    results.push(result);
                 }
-                results.push(FetchResult { seq, uid, body });
-            }
-        }
+            })
+            .await?;
         Ok(results)
     }
 
@@ -359,15 +346,14 @@ impl<T> Session<Selected, T> {
     }
 
     async fn run_search(&mut self, cmd: &str) -> Result<Vec<u32>, ClientError> {
-        let mut events = self.raw.events();
-        let _resp = self.raw.execute_command(cmd).await?;
-
         let mut all_ids = Vec::new();
-        while let Ok(event) = events.try_recv() {
-            if let Ok((_, Response::Data(DataResponse::Search(ids)))) = parse_response(&event) {
-                all_ids.extend(ids);
-            }
-        }
+        self.raw
+            .execute_streaming(cmd, is_search, |frame| {
+                if let Ok((_, Response::Data(DataResponse::Search(ids)))) = parse_response(frame) {
+                    all_ids.extend(ids);
+                }
+            })
+            .await?;
         Ok(all_ids)
     }
 
@@ -462,10 +448,12 @@ impl<T> Session<Selected, T> {
         if !self.capabilities.idle {
             return Err(ClientError::UnsupportedCapability("IDLE"));
         }
-        let mut events = self.raw.events();
         let writer = self.raw.writer();
-        let (_tag, reply_rx) = self.raw.send_command_async("IDLE").await?;
-        wait_for_continuation(&mut events, Duration::from_secs(30)).await?;
+        let stream = self
+            .raw
+            .send_command_streaming("IDLE", is_continuation)
+            .await?;
+        let reply_rx = await_continuation(stream, self.raw.default_timeout).await?;
         Ok(IdleHandle::new(writer, reply_rx))
     }
 
@@ -492,38 +480,57 @@ impl<T> Session<Selected, T> {
 
 // --- Helpers -----------------------------------------------------------
 
-/// Wait for the next `+ ...` continuation request on the broadcast
-/// channel, dropping any other untagged frames in the interim.
-async fn wait_for_continuation(
-    events: &mut broadcast::Receiver<Vec<u8>>,
+fn is_continuation(response: &Response<'_>) -> bool {
+    matches!(response, Response::Continue(_))
+}
+
+fn is_fetch(response: &Response<'_>) -> bool {
+    matches!(response, Response::Data(DataResponse::Fetch { .. }))
+}
+
+fn is_search(response: &Response<'_>) -> bool {
+    matches!(response, Response::Data(DataResponse::Search(_)))
+}
+
+/// Build a [`FetchResult`] from one untagged `FETCH` frame.
+fn fetch_result(frame: &[u8]) -> Option<FetchResult> {
+    let Ok((_, Response::Data(DataResponse::Fetch { seq, attributes }))) = parse_response(frame)
+    else {
+        return None;
+    };
+    let mut uid = None;
+    let mut body = None;
+    for attr in attributes {
+        match attr {
+            FetchAttribute::Uid(u) => uid = Some(u),
+            FetchAttribute::BodySection { data: Some(d), .. } => body = Some(d.to_vec()),
+            FetchAttribute::Body(b) | FetchAttribute::Rfc822(b) => body = Some(b.to_vec()),
+            _ => {}
+        }
+    }
+    Some(FetchResult { seq, uid, body })
+}
+
+/// Wait for the `+` continuation request of a command sent with an
+/// [`is_continuation`] stream, then hand back its tagged-reply receiver.
+///
+/// If the tagged response arrives first the command has already ended:
+/// its `NO`/`BAD` (or connection error) is returned at once, rather than
+/// after `timeout`.
+async fn await_continuation(
+    mut stream: CommandStream,
     timeout: Duration,
-) -> Result<(), ClientError> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let now = tokio::time::Instant::now();
-        if now >= deadline {
-            return Err(ClientError::Timeout);
-        }
-        match tokio::time::timeout(deadline - now, events.recv()).await {
-            Ok(Ok(frame)) => {
-                if frame.starts_with(b"+") {
-                    return Ok(());
-                }
-                // Otherwise it's an unrelated untagged frame — keep waiting.
-            }
-            Ok(Err(broadcast::error::RecvError::Closed)) => {
-                return Err(ClientError::ConnectionClosed);
-            }
-            Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
-                // We may have missed the continuation — the dispatcher's
-                // bound is generous, but treat lag as a protocol error
-                // rather than guessing.
-                return Err(ClientError::CommandFailed(
-                    "broadcast lagged; continuation may have been missed".into(),
-                ));
-            }
-            Err(_) => return Err(ClientError::Timeout),
-        }
+) -> Result<oneshot::Receiver<Result<Vec<u8>, ClientError>>, ClientError> {
+    match tokio::time::timeout(timeout, stream.next_frame()).await {
+        Err(_) => Err(ClientError::Timeout),
+        Ok(Some(_continuation)) => Ok(stream.into_reply()),
+        Ok(None) => match stream.into_reply().await {
+            Ok(Err(e)) => Err(e),
+            Ok(Ok(_)) => Err(ClientError::CommandFailed(
+                "server completed the command without a continuation request".into(),
+            )),
+            Err(_) => Err(ClientError::ConnectionClosed),
+        },
     }
 }
 
@@ -960,6 +967,100 @@ mod tests {
             .unwrap();
         let (_, r) = task.await.unwrap();
         r.unwrap();
+    }
+
+    /// More untagged frames than the event broadcast holds, to show that a
+    /// command's own data no longer depends on that ring's capacity.
+    const FRAMES_PAST_EVENT_CAPACITY: usize = 1500;
+
+    /// Answer the next command with `frames` then a tagged `OK`, writing
+    /// concurrently with the client's reads.
+    async fn reply_with_frames(server: &mut tokio::io::DuplexStream, frames: Vec<u8>) {
+        let tag = read_cmd_tag(server).await;
+        server.write_all(&frames).await.unwrap();
+        server
+            .write_all(format!("{tag} OK done\r\n").as_bytes())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn fetch_more_frames_than_event_capacity_returns_every_message() {
+        let (client_io, mut server_io) = duplex(64 * 1024);
+        let mut session = selected_session(client_io);
+        let task = tokio::spawn(async move { session.fetch("1:*", "UID").await });
+
+        let frames: Vec<u8> = (1..=FRAMES_PAST_EVENT_CAPACITY)
+            .flat_map(|n| format!("* {n} FETCH (UID {n})\r\n").into_bytes())
+            .collect();
+        reply_with_frames(&mut server_io, frames).await;
+
+        let results = task.await.unwrap().unwrap();
+        assert_eq!(results.len(), FRAMES_PAST_EVENT_CAPACITY);
+        assert_eq!(
+            results.last().unwrap().uid,
+            Some(FRAMES_PAST_EVENT_CAPACITY as u32)
+        );
+    }
+
+    #[tokio::test]
+    async fn search_more_frames_than_event_capacity_returns_every_id() {
+        let (client_io, mut server_io) = duplex(64 * 1024);
+        let mut session = selected_session(client_io);
+        let task = tokio::spawn(async move { session.search(SearchQuery::subject("t")).await });
+
+        let frames: Vec<u8> = (1..=FRAMES_PAST_EVENT_CAPACITY)
+            .flat_map(|n| format!("* SEARCH {n}\r\n").into_bytes())
+            .collect();
+        reply_with_frames(&mut server_io, frames).await;
+
+        let ids = task.await.unwrap().unwrap();
+        assert_eq!(ids.len(), FRAMES_PAST_EVENT_CAPACITY);
+    }
+
+    #[tokio::test]
+    async fn fetch_keeps_its_data_off_the_event_channel_but_not_unsolicited_frames() {
+        let (client_io, mut server_io) = duplex(4096);
+        let mut session = selected_session(client_io);
+        let mut events = session.events();
+        let task = tokio::spawn(async move { session.fetch("1", "UID").await });
+
+        reply_with_frames(
+            &mut server_io,
+            b"* 1 FETCH (UID 7)\r\n* 4 EXISTS\r\n".to_vec(),
+        )
+        .await;
+
+        let results = task.await.unwrap().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(&events.recv().await.unwrap()[..], b"* 4 EXISTS\r\n");
+        assert!(events.try_recv().is_err(), "FETCH data leaked to events()");
+    }
+
+    #[tokio::test]
+    async fn idle_tagged_no_instead_of_continuation_fails_without_waiting() {
+        let (client_io, mut server_io) = duplex(1024);
+        let caps = Capabilities {
+            idle: true,
+            ..Default::default()
+        };
+        let mut session = selected_session_with_caps(client_io, caps);
+        let task = tokio::spawn(async move { session.idle().await.map(|_| ()) });
+
+        let tag = read_cmd_tag(&mut server_io).await;
+        server_io
+            .write_all(format!("{tag} NO IDLE refused\r\n").as_bytes())
+            .await
+            .unwrap();
+
+        let result = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("idle() waited for its timeout instead of the tagged NO")
+            .unwrap();
+        assert!(
+            matches!(&result, Err(ClientError::CommandFailed(text)) if text.contains("refused")),
+            "got {result:?}"
+        );
     }
 
     #[tokio::test]

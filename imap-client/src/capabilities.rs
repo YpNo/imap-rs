@@ -87,6 +87,17 @@ impl Capabilities {
         }
     }
 
+    /// Whether `response` carries a capability list: a `CAPABILITY` data
+    /// response or a status response with a `[CAPABILITY …]` code. Usable
+    /// as a [`FrameFilter`](crate::client::FrameFilter).
+    pub fn is_capability_response(response: &Response<'_>) -> bool {
+        match response {
+            Response::Data(DataResponse::Capability(_)) => true,
+            Response::Status(s) => matches!(s.code, Some(ResponseCode::Capability(_))),
+            _ => false,
+        }
+    }
+
     /// Update from a parsed [`Response`] if it carries capabilities — either
     /// a `* CAPABILITY …` data response or a `[CAPABILITY …]` response code
     /// on a status response. Returns `true` if anything was updated.

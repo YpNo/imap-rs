@@ -1,23 +1,33 @@
 //! Async I/O dispatcher: pipelines commands by tag, routes tagged status
-//! responses back to the originating future, broadcasts untagged events.
+//! responses back to the originating future, streams a command's own
+//! untagged data to it, and broadcasts every other untagged frame.
 //!
 //! ## Routing semantics
 //!
 //! Each command is assigned a monotonically-increasing tag. The dispatcher
-//! parses every frame: tagged status frames go back to the awaiting caller
-//! via a `oneshot`; untagged frames (data, status, continuation) go to the
-//! broadcast channel. Tagged frames whose status is `NO` or `BAD` are
-//! converted to [`ClientError::CommandFailed`] before being delivered, so
-//! callers don't need to re-parse the wire bytes to discover failure.
+//! parses every frame and routes it one of three ways:
+//!
+//! - A tagged status frame goes back to the awaiting caller via a
+//!   `oneshot`. `NO` and `BAD` are converted to [`ClientError::CommandFailed`]
+//!   before delivery, so callers don't need to re-parse the wire bytes.
+//! - An untagged frame accepted by the [`FrameFilter`] of an in-flight
+//!   streaming command ([`RawClient::send_command_streaming`]) goes to that
+//!   command's bounded channel. When the channel is full the dispatcher
+//!   stops reading until the command consumes it, so a large `FETCH` is
+//!   held in memory one bounded batch at a time instead of piling up.
+//! - Every other untagged frame (`EXISTS`, `EXPUNGE`, `[ALERT]`, …) is
+//!   broadcast to [`RawClient::events`] subscribers as a shared [`Bytes`],
+//!   so subscribers never copy it.
 //!
 //! ## Cancellation
 //!
 //! If a caller drops the returned future before the tagged response arrives,
 //! the `oneshot::Sender` becomes useless but no resource leak occurs — the
-//! pending entry is removed on the next match attempt.
+//! pending entry is removed on the next match attempt. Frames a dropped
+//! stream would have received are broadcast instead.
 
-use bytes::BytesMut;
-use std::collections::HashMap;
+use bytes::{Buf, Bytes, BytesMut};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -29,12 +39,27 @@ use imap_core::parser::{MAX_LITERAL_SIZE, parse_response};
 
 /// Reply channel for tagged-response delivery.
 type TaggedReply = oneshot::Sender<Result<Vec<u8>, ClientError>>;
-type PendingCommands = Arc<Mutex<HashMap<String, TaggedReply>>>;
+/// Receiving end of a [`TaggedReply`].
+type ReplyReceiver = oneshot::Receiver<Result<Vec<u8>, ClientError>>;
+type PendingCommands = Arc<Mutex<Pending>>;
 
-/// Capacity (number of buffered messages) of the untagged-event broadcast
+/// Selects the untagged responses that belong to a streaming command; see
+/// [`RawClient::send_command_streaming`].
+pub type FrameFilter = fn(&Response<'_>) -> bool;
+
+/// Capacity (number of buffered frames) of the untagged-event broadcast
 /// channel. Slow consumers experience [`broadcast::error::RecvError::Lagged`]
-/// once they fall this far behind.
-const EVENT_CHANNEL_CAP: usize = 1024;
+/// once they fall this far behind. Only unsolicited frames use it: a
+/// command's own data travels on its stream, so this stays small to bound
+/// what a slow subscriber can make the client retain.
+const EVENT_CHANNEL_CAP: usize = 256;
+
+/// Frames buffered for one streaming command before the dispatcher waits
+/// for that command to consume them.
+const STREAM_CHANNEL_CAP: usize = 32;
+
+/// Capacity of the queue between callers and the write loop.
+const WRITE_CHANNEL_CAP: usize = 32;
 
 /// Hard ceiling on the bytes buffered for a single in-flight response frame.
 /// Bounds the read buffer so a hostile server cannot exhaust memory by
@@ -45,25 +70,91 @@ const EVENT_CHANNEL_CAP: usize = 1024;
 /// protocol overhead.
 const MAX_FRAME_SIZE: usize = MAX_LITERAL_SIZE + 64 * 1024;
 
+/// A streaming command's claim on untagged frames.
+struct Collector {
+    tag: String,
+    wants: FrameFilter,
+    tx: mpsc::Sender<Bytes>,
+}
+
+/// Commands awaiting their tagged response.
+#[derive(Default)]
+struct Pending {
+    replies: HashMap<String, TaggedReply>,
+    /// Streaming commands in write order. An untagged frame goes to the
+    /// oldest one still listening whose filter accepts it.
+    collectors: VecDeque<Collector>,
+}
+
+impl Pending {
+    fn collector_for(&self, response: &Response<'_>) -> Option<mpsc::Sender<Bytes>> {
+        self.collectors
+            .iter()
+            .find(|c| !c.tx.is_closed() && (c.wants)(response))
+            .map(|c| c.tx.clone())
+    }
+
+    /// Take `tag`'s reply sender and end its frame stream, if it has one.
+    fn complete(&mut self, tag: &str) -> Option<TaggedReply> {
+        self.collectors.retain(|c| c.tag != tag);
+        self.replies.remove(tag)
+    }
+}
+
+/// Where the read loop sends one parsed frame.
+enum Route {
+    Tagged {
+        tag: String,
+        status: Status,
+        text: String,
+    },
+    Stream(mpsc::Sender<Bytes>),
+    Broadcast,
+}
+
 /// Items written by [`write_loop`].
 enum WriteRequest {
-    /// A tagged command. The dispatcher registers `tag` → `reply_tx`
-    /// before writing `bytes`, so a fast server can never beat us to the
-    /// pending-map insertion.
+    /// A tagged command. The dispatcher registers `tag` → `reply_tx` (and
+    /// the frame collector, if any) before writing `bytes`, so a fast
+    /// server can never beat us to the pending-map insertion.
     Command {
         bytes: Vec<u8>,
         tag: String,
         reply_tx: TaggedReply,
+        collector: Option<(FrameFilter, mpsc::Sender<Bytes>)>,
     },
     /// A raw byte sequence. Used for IDLE's `DONE` and continuation
     /// payloads where no tagged response is expected immediately.
     Raw { bytes: Vec<u8> },
 }
 
+/// A command whose untagged data arrives on its own bounded stream; returned
+/// by [`RawClient::send_command_streaming`].
+pub struct CommandStream {
+    frames: mpsc::Receiver<Bytes>,
+    reply: ReplyReceiver,
+}
+
+impl CommandStream {
+    /// The next untagged frame selected for this command, in wire order.
+    /// Returns `None` once the command's tagged response has arrived (all of
+    /// its frames have then been delivered) or the connection has failed;
+    /// [`into_reply`](Self::into_reply) then yields the outcome.
+    pub async fn next_frame(&mut self) -> Option<Bytes> {
+        self.frames.recv().await
+    }
+
+    /// Stop receiving frames and return the tagged-response receiver.
+    /// Frames this command would have received are broadcast instead.
+    pub fn into_reply(self) -> oneshot::Receiver<Result<Vec<u8>, ClientError>> {
+        self.reply
+    }
+}
+
 /// Async dispatcher around a single tokio I/O stream.
 pub struct RawClient {
     write_tx: mpsc::Sender<WriteRequest>,
-    event_tx: broadcast::Sender<Vec<u8>>,
+    event_tx: broadcast::Sender<Bytes>,
     tag_counter: u64,
     /// Default per-command deadline applied by [`RawClient::execute_command`].
     pub default_timeout: Duration,
@@ -77,10 +168,10 @@ impl RawClient {
         S: AsyncRead + AsyncWrite + Send + 'static,
     {
         let (read_half, write_half) = tokio::io::split(stream);
-        let (write_tx, write_rx) = mpsc::channel(32);
+        let (write_tx, write_rx) = mpsc::channel(WRITE_CHANNEL_CAP);
         let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_CAP);
 
-        let pending_commands = Arc::new(Mutex::new(HashMap::new()));
+        let pending_commands = PendingCommands::default();
 
         tokio::spawn(read_loop(
             read_half,
@@ -102,10 +193,11 @@ impl RawClient {
         }
     }
 
-    /// Subscribe to untagged server frames (data, status, and continuation
-    /// responses). Each subscriber gets its own receiver; slow consumers may
-    /// observe `Lagged` once they fall behind the channel capacity.
-    pub fn events(&self) -> broadcast::Receiver<Vec<u8>> {
+    /// Subscribe to untagged server frames that no streaming command claimed
+    /// (unsolicited data and status responses, and continuation requests).
+    /// Each subscriber gets its own receiver over shared frames; slow
+    /// consumers observe `Lagged` once they fall behind the channel capacity.
+    pub fn events(&self) -> broadcast::Receiver<Bytes> {
         self.event_tx.subscribe()
     }
 
@@ -142,6 +234,31 @@ impl RawClient {
         }
     }
 
+    /// Send `cmd`, pass each untagged frame `wants` accepts to `on_frame` as
+    /// it arrives, then return the tagged response as
+    /// [`execute_command`](Self::execute_command) does. The whole exchange
+    /// runs under [`default_timeout`](Self::default_timeout).
+    pub async fn execute_streaming(
+        &mut self,
+        cmd: &str,
+        wants: FrameFilter,
+        mut on_frame: impl FnMut(&[u8]),
+    ) -> Result<Vec<u8>, ClientError> {
+        let mut stream = self.send_command_streaming(cmd, wants).await?;
+        let exchange = async move {
+            while let Some(frame) = stream.next_frame().await {
+                on_frame(&frame);
+            }
+            stream
+                .into_reply()
+                .await
+                .map_err(|_| ClientError::ConnectionClosed)?
+        };
+        tokio::time::timeout(self.default_timeout, exchange)
+            .await
+            .map_err(|_| ClientError::Timeout)?
+    }
+
     /// Send a command and return a receiver for its tagged response without
     /// awaiting. Used by long-running commands (e.g. IDLE) where the caller
     /// needs to interleave other I/O before the tagged reply arrives.
@@ -153,6 +270,33 @@ impl RawClient {
         &mut self,
         cmd: &str,
     ) -> Result<(String, oneshot::Receiver<Result<Vec<u8>, ClientError>>), ClientError> {
+        self.enqueue_command(cmd, None).await
+    }
+
+    /// Send a command whose untagged responses accepted by `wants` are
+    /// delivered on the returned [`CommandStream`] instead of
+    /// [`events`](Self::events), in wire order and before its tagged reply.
+    ///
+    /// The stream is bounded: while it is full the connection stops reading,
+    /// so read it promptly (or drop it with
+    /// [`into_reply`](CommandStream::into_reply)) rather than awaiting other
+    /// commands first. Validates `cmd` as
+    /// [`send_command_async`](Self::send_command_async) does.
+    pub async fn send_command_streaming(
+        &mut self,
+        cmd: &str,
+        wants: FrameFilter,
+    ) -> Result<CommandStream, ClientError> {
+        let (frames_tx, frames) = mpsc::channel(STREAM_CHANNEL_CAP);
+        let (_tag, reply) = self.enqueue_command(cmd, Some((wants, frames_tx))).await?;
+        Ok(CommandStream { frames, reply })
+    }
+
+    async fn enqueue_command(
+        &mut self,
+        cmd: &str,
+        collector: Option<(FrameFilter, mpsc::Sender<Bytes>)>,
+    ) -> Result<(String, ReplyReceiver), ClientError> {
         crate::wire::reject_line_breaks(cmd)?;
         let tag = self.next_tag();
         let bytes = format!("{} {}\r\n", tag, cmd).into_bytes();
@@ -162,6 +306,7 @@ impl RawClient {
                 bytes,
                 tag: tag.clone(),
                 reply_tx,
+                collector,
             })
             .await
             .map_err(|_| ClientError::ConnectionClosed)?;
@@ -218,10 +363,11 @@ async fn write_loop<W>(
                 bytes,
                 tag,
                 reply_tx,
+                collector,
             } => {
                 // Register the pending entry BEFORE writing so the read
                 // loop cannot miss a match against a fast server reply.
-                pending_commands.lock().await.insert(tag, reply_tx);
+                register(&pending_commands, tag, reply_tx, collector).await;
                 if write_half.write_all(&bytes).await.is_err() {
                     break;
                 }
@@ -235,12 +381,30 @@ async fn write_loop<W>(
     }
 }
 
+async fn register(
+    pending: &PendingCommands,
+    tag: String,
+    reply_tx: TaggedReply,
+    collector: Option<(FrameFilter, mpsc::Sender<Bytes>)>,
+) {
+    let mut pending = pending.lock().await;
+    if let Some((wants, tx)) = collector {
+        pending.collectors.push_back(Collector {
+            tag: tag.clone(),
+            wants,
+            tx,
+        });
+    }
+    pending.replies.insert(tag, reply_tx);
+}
+
 /// Drain every pending tagged-command waiter, delivering a freshly built
-/// error to each. `make_err` is a factory because [`ClientError`] is not
-/// `Clone` (it wraps `std::io::Error`).
+/// error to each, and end every frame stream. `make_err` is a factory
+/// because [`ClientError`] is not `Clone` (it wraps `std::io::Error`).
 async fn fail_all_pending(pending: &PendingCommands, make_err: impl Fn() -> ClientError) {
-    let mut map = pending.lock().await;
-    for (_, tx) in map.drain() {
+    let mut pending = pending.lock().await;
+    pending.collectors.clear();
+    for (_, tx) in pending.replies.drain() {
         let _ = tx.send(Err(make_err()));
     }
 }
@@ -248,7 +412,7 @@ async fn fail_all_pending(pending: &PendingCommands, make_err: impl Fn() -> Clie
 async fn read_loop<R>(
     mut read_half: R,
     pending_commands: PendingCommands,
-    event_tx: broadcast::Sender<Vec<u8>>,
+    event_tx: broadcast::Sender<Bytes>,
     max_frame_size: usize,
 ) where
     R: AsyncRead + Unpin,
@@ -264,18 +428,10 @@ async fn read_loop<R>(
             }
             Ok(_) => {
                 while !buffer.is_empty() {
-                    // Extract owned routing info from the parse so we can
-                    // mutate the buffer afterwards.
-                    let routing = match parse_response(&buffer) {
+                    let (consumed, route) = match parse_response(&buffer) {
                         Ok((remaining, response)) => {
                             let consumed = buffer.len() - remaining.len();
-                            let routing = match &response {
-                                Response::Status(s) => s
-                                    .tag
-                                    .map(|tag| (tag.to_string(), s.status, s.text.to_string())),
-                                _ => None,
-                            };
-                            (consumed, routing)
+                            (consumed, route_for(&response, &pending_commands).await)
                         }
                         Err(imap_core::error::ParseError::Incomplete) => break,
                         Err(e) => {
@@ -289,9 +445,12 @@ async fn read_loop<R>(
                             return;
                         }
                     };
-                    let (consumed, routing) = routing;
-                    let frame = buffer.split_to(consumed).to_vec();
-                    dispatch_frame(routing, frame, &pending_commands, &event_tx).await;
+                    // One exact-size copy per frame: it shares no allocation
+                    // with the read buffer, so a frame a subscriber keeps
+                    // cannot pin a buffer grown for an earlier large literal.
+                    let frame = Bytes::copy_from_slice(&buffer[..consumed]);
+                    buffer.advance(consumed);
+                    dispatch_frame(route, frame, &pending_commands, &event_tx).await;
                 }
 
                 // Complete frames have been split off; any residue is a single
@@ -314,20 +473,43 @@ async fn read_loop<R>(
     }
 }
 
-/// Route a parsed frame to either a pending tagged-command future or the
-/// broadcast channel. Tagged `NO`/`BAD` responses are converted to
-/// [`ClientError::CommandFailed`] here so callers don't have to re-parse.
+/// Decide where a parsed frame goes. Tagged status frames are matched by
+/// tag in [`dispatch_frame`]; untagged frames go to the oldest streaming
+/// command that wants them, else to the broadcast.
+async fn route_for(response: &Response<'_>, pending: &PendingCommands) -> Route {
+    if let Response::Status(s) = response
+        && let Some(tag) = s.tag
+    {
+        return Route::Tagged {
+            tag: tag.to_string(),
+            status: s.status,
+            text: s.text.to_string(),
+        };
+    }
+    match pending.lock().await.collector_for(response) {
+        Some(tx) => Route::Stream(tx),
+        None => Route::Broadcast,
+    }
+}
+
+/// Deliver a frame along its [`Route`]. Tagged `NO`/`BAD` responses are
+/// converted to [`ClientError::CommandFailed`] here so callers don't have
+/// to re-parse. A tagged frame with no waiter, or a frame whose stream was
+/// dropped, is broadcast.
 async fn dispatch_frame(
-    routing: Option<(String, Status, String)>,
-    frame: Vec<u8>,
+    route: Route,
+    frame: Bytes,
     pending_commands: &PendingCommands,
-    event_tx: &broadcast::Sender<Vec<u8>>,
+    event_tx: &broadcast::Sender<Bytes>,
 ) {
-    if let Some((tag, status, text)) = routing {
-        let mut map = pending_commands.lock().await;
-        if let Some(tx) = map.remove(&tag) {
+    let unclaimed = match route {
+        Route::Tagged { tag, status, text } => {
+            let Some(tx) = pending_commands.lock().await.complete(&tag) else {
+                let _ = event_tx.send(frame);
+                return;
+            };
             let result = match status {
-                Status::Ok => Ok(frame),
+                Status::Ok => Ok(frame.to_vec()),
                 Status::No | Status::Bad => Err(ClientError::CommandFailed(text)),
                 Status::Bye => Err(ClientError::ConnectionClosed),
                 // PREAUTH is only valid as an untagged greeting; if it
@@ -337,17 +519,65 @@ async fn dispatch_frame(
             let _ = tx.send(result);
             return;
         }
-    }
-    // Untagged or no matching pending entry — broadcast.
-    let _ = event_tx.send(frame);
+        // Awaiting here is the backpressure: the read loop pauses until the
+        // command consumes its stream.
+        Route::Stream(tx) => match tx.send(frame).await {
+            Ok(()) => return,
+            Err(unsent) => unsent.0,
+        },
+        Route::Broadcast => frame,
+    };
+    let _ = event_tx.send(unclaimed);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use imap_core::ast::DataResponse;
     use imap_core::error::ParseError;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
+
+    fn is_fetch(response: &Response<'_>) -> bool {
+        matches!(response, Response::Data(DataResponse::Fetch { .. }))
+    }
+
+    #[tokio::test]
+    async fn events_subscribers_share_one_frame_allocation() {
+        let (client_io, mut server_io) = duplex(1024);
+        let client = RawClient::new(client_io);
+        let mut first = client.events();
+        let mut second = client.events();
+
+        server_io.write_all(b"* 3 EXISTS\r\n").await.unwrap();
+
+        let a = first.recv().await.unwrap();
+        let b = second.recv().await.unwrap();
+        assert_eq!(&a[..], b"* 3 EXISTS\r\n");
+        assert_eq!(a.as_ptr(), b.as_ptr(), "each subscriber got its own copy");
+    }
+
+    #[tokio::test]
+    async fn streamed_frames_go_to_events_once_the_stream_is_dropped() {
+        let (client_io, mut server_io) = duplex(1024);
+        let mut client = RawClient::new(client_io);
+        let mut events = client.events();
+        let stream = client
+            .send_command_streaming("IDLE", |r| matches!(r, Response::Continue(_)))
+            .await
+            .unwrap();
+        let _reply = stream.into_reply();
+
+        let mut buf = [0u8; 64];
+        let _ = server_io.read(&mut buf).await.unwrap();
+        server_io.write_all(b"+ idling\r\n").await.unwrap();
+
+        let frame = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .expect("frame was swallowed by a dropped stream")
+            .unwrap();
+        assert_eq!(&frame[..], b"+ idling\r\n");
+    }
 
     #[tokio::test]
     async fn test_tagged_response_matching() {
@@ -597,7 +827,6 @@ mod tests {
         const CHUNK: usize = 37;
         let (client_io, mut server_io) = duplex(1 << 20);
         let mut client = RawClient::new(client_io);
-        let mut events = client.events();
 
         let mut wire = Vec::new();
         for n in 1..=FRAMES {
@@ -617,14 +846,15 @@ mod tests {
             server_io
         });
 
-        let result = client.execute_command("FETCH 1:* (FLAGS UID)").await;
+        let mut received = 0;
+        let result = client
+            .execute_streaming("FETCH 1:* (FLAGS UID)", is_fetch, |frame| {
+                assert!(frame.ends_with(b"\r\n"));
+                received += 1;
+            })
+            .await;
         assert!(result.is_ok(), "tagged OK must be routed, got {result:?}");
         let _server_io = server.await.unwrap();
-
-        let mut received = 0;
-        while events.try_recv().is_ok() {
-            received += 1;
-        }
         assert_eq!(received, FRAMES);
     }
 
@@ -636,11 +866,11 @@ mod tests {
         // the real 64 MiB `MAX_FRAME_SIZE` would allocate 64 MiB.
         let (client_io, mut server_io) = duplex(8192);
 
-        let pending: PendingCommands = Arc::new(Mutex::new(HashMap::new()));
+        let pending = PendingCommands::default();
         let (event_tx, _event_rx) = broadcast::channel(EVENT_CHANNEL_CAP);
 
         let (reply_tx, reply_rx) = oneshot::channel();
-        pending.lock().await.insert("A0001".to_string(), reply_tx);
+        register(&pending, "A0001".to_string(), reply_tx, None).await;
 
         let max_frame_size = 64;
         let loop_task = tokio::spawn(read_loop(

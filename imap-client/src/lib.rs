@@ -12,7 +12,8 @@
 //!   [`Authenticated`], [`Selected`]) and transport ([`PlainText`], [`Tls`]),
 //!   so invalid command sequences fail to compile.
 //! - [`RawClient`] is the lower-level pipelining dispatcher: it routes tagged
-//!   responses back to callers and broadcasts untagged events.
+//!   responses back to callers, streams each command's own untagged data to
+//!   it under backpressure, and broadcasts the rest as shared [`Bytes`].
 //! - Credentials ([`credentials::Password`], [`credentials::OAuthToken`]) are
 //!   zeroized on drop and redacted in `Debug`.
 #![forbid(unsafe_code)]
@@ -28,6 +29,9 @@ pub mod search;
 pub mod session;
 mod wire;
 
+/// Shared, cheaply cloned frame bytes, as delivered by
+/// [`RawClient::events`] and [`client::CommandStream`].
+pub use bytes::Bytes;
 pub use capabilities::Capabilities;
 pub use client::RawClient;
 pub use error::ClientError;

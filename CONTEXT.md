@@ -24,13 +24,14 @@ The parser operates on `&[u8]` slices and maintains references into the original
 The `RawClient` uses a `BytesMut` buffer strategy to handle:
 - **Partial Reads**: Correctly reassembles protocol frames split across multiple TCP packets.
 - **Binary Literals**: Identifies `{n}\r\n` lengths to wait for complete data blocks.
-- **Event Broadcasting**: Background untagged responses (e.g., `EXISTS`, `FETCH`) are broadcast via a `tokio::sync::broadcast` channel.
+- **Per-Command Streams**: Untagged data a command asked for (`FETCH`, `SEARCH`, `CAPABILITY`, `+` continuations) goes to that command's bounded channel; the dispatcher stops reading while it is full, so a large `FETCH` never piles up in memory.
+- **Event Broadcasting**: Unsolicited untagged responses (e.g., `EXISTS`, `EXPUNGE`) are broadcast as shared `bytes::Bytes` via a `tokio::sync::broadcast` channel.
 
 ### 5. Ergonomic & Structured API
 While maintaining low-level protocol access (`fetch_raw`), the library provides a high-level, ergonomic interface for common tasks:
 - **`fetch`**: Returns structured `FetchResult` objects instead of raw bytes, automatically handling attribute extraction and literal reassembly.
 - **`fetch_body`**: A convenience method to directly retrieve message content as a string.
-- **Stateful Results**: Automatically drains untagged broadcast events to ensure a complete and consistent view of command results.
+- **Stateful Results**: Consumes each command's own stream as frames arrive, so results are complete however many frames the server sends.
 
 ## Security & Quality Gates
 
