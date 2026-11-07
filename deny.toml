@@ -1,12 +1,17 @@
 [graph]
+# Every platform the crates are expected to build on, so a crate pulled in
+# only for one of them (e.g. windows-sys) is still checked.
 targets = [
     { triple = "aarch64-apple-darwin" },
     { triple = "x86_64-apple-darwin" },
     { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-unknown-linux-gnu" },
+    { triple = "x86_64-pc-windows-msvc" },
 ]
 
 [advisories]
-unmaintained = "workspace"
+# Report unmaintained crates anywhere in the graph, not only direct ones.
+unmaintained = "all"
 ignore = []
 
 [licenses]
