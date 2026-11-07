@@ -49,10 +49,11 @@ const REPLACEMENT: char = '\u{FFFD}';
 
 impl ClientError {
     /// [`ClientError::CommandFailed`] built from server-supplied resp-text,
-    /// made safe to print: control characters (C0, DEL, C1) and
-    /// bidirectional-formatting characters become U+FFFD, so a hostile
-    /// server cannot drive the terminal or log viewer that displays the
-    /// error, and the text is cut to [`MAX_SERVER_TEXT_CHARS`].
+    /// made safe to print: control characters (C0, DEL, C1), line and
+    /// paragraph separators, and bidirectional-formatting characters become
+    /// U+FFFD, so a hostile server cannot drive the terminal or log viewer
+    /// that displays the error, and the text is cut to
+    /// [`MAX_SERVER_TEXT_CHARS`].
     pub fn command_failed(text: &str) -> Self {
         let mut safe: String = text
             .chars()
@@ -72,9 +73,21 @@ impl ClientError {
     }
 }
 
-/// Whether `c` can change how surrounding text is rendered.
+/// Whether `c` can change how surrounding text is rendered: controls,
+/// line and paragraph separators (shown as line breaks by some log
+/// viewers), and bidirectional marks, embeddings, overrides and isolates.
 fn is_unsafe_to_display(c: char) -> bool {
-    c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+    c.is_control()
+        || matches!(
+            c,
+            '\u{061C}'
+                | '\u{200E}'
+                | '\u{200F}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2066}'..='\u{2069}'
+        )
 }
 
 #[cfg(test)]
@@ -91,6 +104,19 @@ mod tests {
             "{shown:?}"
         );
         assert!(shown.contains("FAKE ALERT"), "{shown:?}");
+    }
+
+    #[test]
+    fn command_failed_replaces_line_separators_and_bidi_marks() {
+        // U+2028/U+2029 render as line breaks in some log viewers, letting a
+        // server fake a separate log line; the marks reorder nearby text.
+        for c in ['\u{2028}', '\u{2029}', '\u{200E}', '\u{200F}', '\u{061C}'] {
+            let ClientError::CommandFailed(text) = ClientError::command_failed(&format!("a{c}b"))
+            else {
+                panic!("expected CommandFailed");
+            };
+            assert_eq!(text, "a\u{FFFD}b", "U+{:04X}", c as u32);
+        }
     }
 
     #[test]
