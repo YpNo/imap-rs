@@ -33,7 +33,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Run cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        uses: EmbarkStudios/cargo-deny-action@bb119f768ea239e765aeaef5769558d4f21213aa # v2.1.5
         with:
           command: check
 
@@ -49,7 +49,7 @@ jobs:
         # release (v2.0.0) still runs on Node 20, which GitHub is retiring, and
         # the Node 24 fix is unreleased. The CLI through the same pinned
         # installer as cargo-tarpaulin is the smaller dependency.
-        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        uses: taiki-e/install-action@073e1fd0bc889c9aee68dbaaa927cde1b5653a83 # v2.90.11
         with:
           tool: cargo-audit@0.22.2
       - name: Run cargo audit
